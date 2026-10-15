@@ -213,9 +213,19 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
   });
   return {
     resource,
+    // Kinds that only sweep() may delete; prune() must skip them.
+    sweptKinds: ['transaction', 'revoke'],
     // An unlock transaction that expired unused still holds a live upstream device session; revoke it.
+    // A failed revoke is queued as an already-expired 'revoke' record and retried on the next sweep
+    // until it succeeds or the upstream session expires by itself.
     async sweep() {
-      for (const tx of store.takeExpired('transaction')) if (tx.credential) await upstream.revoke(tx.credential).catch(() => {});
+      const pending = [...store.takeExpired('transaction').map(({ id, value }) => ({ id, credential: value.credential, attempts: 0 })),
+        ...store.takeExpired('revoke').map(({ id, value }) => ({ id, ...value }))];
+      for (const job of pending) {
+        if (!job.credential || job.credential.expiry <= Date.now()) continue;
+        try { await upstream.revoke(job.credential); }
+        catch { store.put('revoke', job.id, { credential: job.credential, attempts: job.attempts + 1 }, Date.now()); }
+      }
     },
     async authenticate(req, res, next) {
       const bearer = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(req.get('authorization') || '')?.[1];

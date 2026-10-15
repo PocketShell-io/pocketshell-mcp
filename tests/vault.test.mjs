@@ -204,10 +204,10 @@ async function harness(t, { ttlSeconds = 28800 } = {}) {
   const verified = [];
   const source = { pull: async (_c, slot) => v.slots[slot] ? { kind: 'ok', version: 1, data: v.slots[slot] } : { kind: 'absent' }, status: async () => ({ kind: 'unavailable' }), verify: async (_c, auth) => { verified.push(auth); return { kind: 'ok' }; } };
   const vault = { sessions, source, hosts: c => store.get('profile', c.identity.id)?.hosts.map(h => h.name) || [], resetUrl: 'https://web.example.com/keys?reset=1' };
-  const executed = [], revoked = [];
+  const executed = [], revoked = []; let revokeFails = false;
   const upstream = { kind: 'pocketshell', base: 'https://broker.example.com', gatewayOrigin: 'https://gateway.example.com',
     start: async () => ({ userCode: 'BCDF-GHJK', deviceCode: secret(), approval: 'https://approval.example.com/device', expiry: Date.now() + 600000, interval: 1 }),
-    poll: async () => credential, identity: async () => identity, revoke: async c => { revoked.push(c.token); }, devices: async () => [{ id: 'device-alpha', idValid: true, presence: { online: true } }] };
+    poll: async () => credential, identity: async () => identity, revoke: async c => { if (revokeFails) throw new Error('offline'); revoked.push(c.token); }, devices: async () => [{ id: 'device-alpha', idValid: true, presence: { online: true } }] };
   const tools = pocketTools({ store, upstream, vault: sessions, execute: async (argv, options) => { executed.push(options.vaultKey.use().toString()); return { ok: true }; } });
   let app; const server = createServer((req, res) => app(req, res)); server.listen(0, 'localhost'); await once(server, 'listening');
   const issuer = `http://localhost:${server.address().port}`;
@@ -242,7 +242,7 @@ async function harness(t, { ttlSeconds = 28800 } = {}) {
     await c.connect(new StreamableHTTPClientTransport(new URL(issuer + '/mcp'), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
     t.after(() => c.close()); return c;
   };
-  return { app, credential, revoked, alpha, beta, v, store, sessions, call, consent, exchange, browserUnlock, mcp, executed, client, verified, advance: ms => { now += ms; } };
+  return { app, credential, revoked, failRevoke: v => { revokeFails = v; }, alpha, beta, v, store, sessions, call, consent, exchange, browserUnlock, mcp, executed, client, verified, advance: ms => { now += ms; } };
 }
 
 test('consent unlock binds only ticked hosts to the grant; locked hosts and revoke give a clear tool error', async t => {
@@ -325,12 +325,21 @@ test('the unlock step gets a fresh window, and an abandoned one revokes its upst
   await h.app.sweepAbandoned();
   assert.deepEqual(h.revoked, [h.credential.token]);
   assert.equal(h.store.db.prepare("SELECT count(*) AS n FROM records WHERE kind='transaction'").get().n, 0);
+  // A failed revoke is retried on the next sweep, and prune() never removes it first.
+  const retry = await h.consent(); await retry.unlock.text();
+  h.store.db.prepare("UPDATE records SET expiry=0 WHERE kind='transaction'").run();
+  h.failRevoke(true); await h.app.sweepAbandoned();
+  assert.equal(h.revoked.length, 1);
+  h.store.prune({ except: h.app.sweptKinds });
+  h.failRevoke(false); await h.app.sweepAbandoned();
+  assert.equal(h.revoked.length, 2);
+  await h.app.sweepAbandoned(); assert.equal(h.revoked.length, 2);
   // A finished unlock leaves nothing to sweep.
   const done = await h.consent(); await done.unlock.text();
   await h.browserUnlock(done, ['alpha']);
   h.store.db.prepare("UPDATE records SET expiry=0 WHERE kind='transaction'").run();
   await h.app.sweepAbandoned();
-  assert.equal(h.revoked.length, 1);
+  assert.equal(h.revoked.length, 2);
 });
 
 test('a read-only grant is offered and allowed only read tools, even with keys unlocked', async t => {

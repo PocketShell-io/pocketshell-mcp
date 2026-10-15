@@ -50,12 +50,16 @@ export class Store {
   }
   // Removes and returns expired records of one kind, for cleanup that must act on them first.
   takeExpired(kind) {
+    const now = Date.now();
     return this.transaction(() => {
-      const rows = this.db.prepare('SELECT id,value FROM records WHERE kind=? AND expiry <= ?').all(kind, Date.now());
-      this.db.prepare('DELETE FROM records WHERE kind=? AND expiry <= ?').run(kind, Date.now());
-      return rows.map(row => this.open(kind, row.id, row.value));
+      const rows = this.db.prepare('SELECT id,value FROM records WHERE kind=? AND expiry <= ?').all(kind, now);
+      this.db.prepare('DELETE FROM records WHERE kind=? AND expiry <= ?').run(kind, now);
+      return rows.map(row => ({ id: row.id, value: this.open(kind, row.id, row.value) }));
     });
   }
-  prune() { this.db.prepare('DELETE FROM records WHERE expiry <= ?').run(Date.now()); }
+  // Kinds in `except` are left for a takeExpired() owner that must act on them before deletion.
+  prune({ except = [] } = {}) {
+    this.db.prepare(`DELETE FROM records WHERE expiry <= ? AND kind NOT IN (${except.map(() => '?').join(',') || "''"})`).run(Date.now(), ...except);
+  }
   close() { this.db.close(); }
 }

@@ -27,5 +27,5 @@ const app = createApp({ store, upstream: remote, tools, vault, issuer: process.e
   redirectUris: (process.env.MCP_REDIRECT_URIS || '').split(',').map(x=>x.trim()).filter(Boolean),
 });
 const server = app.listen(Number(process.env.PORT || 8080), process.env.MCP_BIND || 'localhost', () => console.log(`${kind} MCP listening`));
-const timer = setInterval(() => { app.sweepAbandoned().catch(() => {}).finally(() => { try { store.prune(); } catch {} }); }, 60000); timer.unref();
+const timer = setInterval(() => { app.sweepAbandoned().catch(() => {}).finally(() => { try { store.prune({ except: app.sweptKinds }); } catch {} }); }, 60000); timer.unref();
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { sessions?.dropAll(); server.close(() => { clearInterval(timer); store.close(); process.exit(0); }); });
