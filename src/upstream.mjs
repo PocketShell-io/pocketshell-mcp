@@ -22,7 +22,7 @@ export async function requestJson(base, path, { method = 'GET', body, token, fet
     if (allowText && response.ok) data = { text: Buffer.concat(parts).toString('utf8'), contentType: response.headers.get('content-type') || 'text/plain' };
     else throw new UpstreamError(502, 'invalid_upstream_response');
   }
-  if (!response.ok) throw new UpstreamError(response.status, /^[a-z_]{1,64}$/.test(data?.error) ? data.error : 'upstream_failed');
+  if (!response.ok) throw Object.assign(new UpstreamError(response.status, /^[a-z_]{1,64}$/.test(data?.error) ? data.error : 'upstream_failed'), Number.isFinite(data?.retryAfter) ? { retryAfter: data.retryAfter } : {});
   return data;
 }
 function origins(base, webOrigin, gatewayOrigin) {

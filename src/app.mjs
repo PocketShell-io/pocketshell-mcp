@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { installOAuth, validRedirect } from './oauth.mjs';
+import { VaultLockedError } from './vault.mjs';
 export function createApp(config) {
   const { issuer, tools, upstream } = config;
   const parsed = new URL(issuer);
@@ -39,11 +40,13 @@ export function createApp(config) {
       _meta: { securitySchemes: [{ type: 'oauth2', scopes: ['mcp:tools'] }] },
     }, async args => {
       try {
-        const result = await tools.call(tool.name, args, req.credential);
+        const result = await tools.call(tool.name, args, req.credential, { grantId: req.grantId });
         const content = JSON.stringify(result);
         if (Buffer.byteLength(content) > 1024 * 1024) throw new Error('Response too large');
         return { content: [{ type: 'text', text: content }], structuredContent: result && typeof result === 'object' && !Array.isArray(result) ? result : { result } };
-      } catch {
+      } catch (error) {
+        // The only error text that reaches the client verbatim; it carries no key material.
+        if (error instanceof VaultLockedError) return { isError: true, content: [{ type: 'text', text: error.message }] };
         return { isError: true, content: [{ type: 'text', text: 'Operation failed. Check the resource, permissions and connection configuration; retry reads before repeating a write.' }] };
       }
     });
