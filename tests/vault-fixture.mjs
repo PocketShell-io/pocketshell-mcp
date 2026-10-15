@@ -20,7 +20,7 @@ export function throwawayKey() {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 // keys: [{pem} | {password}] with host aliases to bind; returns the slots plus each key's keyId.
-export async function makeVault(passphrase, { keys, kdf = { m: 32768, t: 1, p: 1 } }) {
+export async function makeVault(passphrase, { keys, kdf = { m: 32768, t: 3, p: 1 } }) {
   const slots = {};
   const store = new KeyVaultStore({ transport: memoryTransport(slots), kdf });
   const created = await store.createVault(passphrase, { syncPassphrase: 'synthetic sync passphrase' });

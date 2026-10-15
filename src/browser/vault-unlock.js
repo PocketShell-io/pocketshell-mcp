@@ -26,6 +26,7 @@ $('vault-unlock').addEventListener('submit', async event => {
     backoff: `Wait ${seconds(result.retryAfterMs || 0)} s before trying again.`,
     rateLimited: `Too many attempts. Try again in ${seconds(result.retryAfterMs || 60000)} s.`,
     noVault: 'This account has no key vault yet. Set one up on the web, or continue without keys.',
+    unsupportedVersion: 'Your vault was saved by a newer PocketShell version than this connector supports. Ask the operator to update it, or continue without keys.',
   }[result.kind] || 'The vault could not be read. Continue without keys, or try again later.');
 });
 function renderHosts(choices) {

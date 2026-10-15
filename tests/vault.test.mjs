@@ -60,6 +60,9 @@ test('core vault: wrong passphrase, server answers, AAD binding and host choices
   assert.deepEqual(choices.map(c => [c.name, c.available]), [['alpha', true], ['legacy', false], ['unbound', false], ['constructor', false]]);
   assert.match(choices[1].reason, /password/);
   assert.equal((await new KeyVaultStore({ transport: memoryTransport({}) }).unlock(passphrase)).kind, 'noVault');
+  // A newer format version must say "update", never look like a wrong passphrase or offer a reset.
+  const newer = JSON.parse(v.header); newer.v = 2;
+  assert.equal((await new KeyVaultStore({ transport: memoryTransport({ ...v.slots, vault: JSON.stringify(newer) }) }).unlock(passphrase)).kind, 'unsupportedVersion');
   // Ungated, core's local check value is authoritative over a verifier 'wrong'; a lockout still stops unlock.
   for (const [answer, kind] of [[{ kind: 'wrong', retryAfterMs: 5000 }, 'ok'], [{ kind: 'locked', retryAfterMs: 900000 }, 'rateLimited']]) {
     const r = await new KeyVaultStore({ transport: memoryTransport(v.slots), verifier: { verify: async () => answer } }).unlock(passphrase);
