@@ -184,11 +184,11 @@ async function harness(t, { ttlSeconds = 28800 } = {}) {
   const call = (path, data, headers = {}, form = false) => fetch(issuer + path, { redirect: 'manual', ...(data ? { method: 'POST', headers: { 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json', origin: issuer, ...headers }, body: form ? new URLSearchParams(data) : JSON.stringify(data) } : { headers }) });
   const client = await (await call('/oauth/register', { redirect_uris: ['http://localhost:9999/cb'], token_endpoint_auth_method: 'none' })).json();
   const verifier = secret();
-  async function consent() {
+  async function consent({ readOnly = false } = {}) {
     const auth = await call('/oauth/authorize?' + new URLSearchParams({ response_type: 'code', client_id: client.client_id, redirect_uri: 'http://localhost:9999/cb', code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url'), resource: issuer + '/mcp' }));
     const cookie = auth.headers.get('set-cookie').split(';')[0];
     const csrf = /name="csrf" value="([^"]+)"/.exec(await auth.text())[1];
-    assert.equal((await call('/oauth/start', { csrf }, { cookie })).status, 200);
+    assert.equal((await call('/oauth/start', { csrf, ...(readOnly ? { read_only: '1' } : {}) }, { cookie }, true)).status, 200);
     const unlock = await call('/oauth/complete', { csrf }, { cookie });
     return { cookie, csrf, unlock };
   }
@@ -279,6 +279,22 @@ test('TTL expiry locks tools; skipping unlock issues a working grant with no key
   assert.equal((await h.call('/oauth/token', refresh)).status, 200);
   assert.equal((await h.call('/oauth/token', refresh)).status, 400);
   assert.equal(h.sessions.size, 0);
+});
+
+test('a read-only grant is offered and allowed only read tools, even with keys unlocked', async t => {
+  const h = await harness(t);
+  const flow = await h.consent({ readOnly: true }); await flow.unlock.text();
+  const tokens = await h.exchange((await (await h.browserUnlock(flow, ['alpha'])).json()).location);
+  const client = await h.mcp(tokens.access_token);
+  assert.deepEqual((await client.listTools()).tools.map(x => x.name).sort(), ['capture', 'hosts', 'ls', 'status']);
+  const refused = await client.callTool({ name: 'send', arguments: { host: 'alpha', session: 's', text: 'rm -rf ~' } });
+  assert.equal(refused.isError, true);
+  assert.notEqual((await client.callTool({ name: 'capture', arguments: { host: 'alpha', session: 's' } })).isError, true);
+  assert.equal(h.executed.length, 1);
+  // A normal grant still lists every tool.
+  const full = await h.consent(); await full.unlock.text();
+  const fullTokens = await h.exchange((await (await h.browserUnlock(full, ['alpha'])).json()).location);
+  assert.equal((await (await h.mcp(fullTokens.access_token)).listTools()).tools.length, 7);
 });
 
 test('no key material reaches logs, error text or the persistent store', async t => {

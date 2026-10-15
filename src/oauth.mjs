@@ -68,13 +68,13 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
     const tx = { id: digest(nonce), csrf: secret(), clientId: client.client_id, redirect: q.redirect_uri, state: q.state, challenge: q.code_challenge, resource, scope, expiry: Date.now() + 600000, phase: 'consent' };
     saveTx(tx);
     res.cookie(cookieName, nonce, { httpOnly: true, secure: issuer.startsWith('https:'), sameSite: 'lax', path: `${prefix}/oauth`, maxAge: 600000 });
-    page(res, `<p>Client: ${html(client.client_name)}</p><p>Return address: ${html(tx.redirect)}</p><p>This grants all ${html(upstream.kind)} tools, including changes and destructive operations, within your existing account permissions. Approve only a connection you just started.</p><form method="post" action="${prefix}/oauth/start"><input type="hidden" name="csrf" value="${tx.csrf}"><button>Continue to device approval</button></form>`);
+    page(res, `<p>Client: ${html(client.client_name)}</p><p>Return address: ${html(tx.redirect)}</p><p>This grants all ${html(upstream.kind)} tools, including changes and destructive operations, within your existing account permissions, unless you choose read-only. Approve only a connection you just started.</p><form method="post" action="${prefix}/oauth/start"><input type="hidden" name="csrf" value="${tx.csrf}"><p><label><input type="checkbox" name="read_only" value="1"> Read-only: offer only tools that read, and refuse anything that starts, sends, stops or changes data</label></p><button>Continue to device approval</button></form>`);
   });
   app.post('/oauth/start', async (req, res) => {
     const tx = csrf(req);
     if (!tx || tx.phase !== 'consent') return fail(res);
     // Persist before awaiting to prevent concurrent starts for the same browser transaction.
-    tx.phase = 'starting'; saveTx(tx);
+    tx.phase = 'starting'; tx.readOnly = req.body.read_only === '1'; saveTx(tx);
     try {
       tx.device = await upstream.start(`${upstream.kind} MCP (${new URL(tx.redirect).hostname})`);
       tx.expiry = Math.min(tx.expiry, tx.device.expiry); tx.nextPoll = 0; tx.phase = 'pending'; saveTx(tx);
@@ -111,7 +111,7 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
     const grantId = secret();
     const grantExpiry = Math.min(credential.expiry, Date.now() + 30 * DAY);
     store.transaction(() => {
-      store.put('grant', grantId, { credential, clientId: tx.clientId, resource, scope, revoked: false }, grantExpiry);
+      store.put('grant', grantId, { credential, clientId: tx.clientId, resource, scope, revoked: false, readOnly: !!tx.readOnly }, grantExpiry);
       store.put('code', digest(code), { grantId, clientId: tx.clientId, redirect: tx.redirect, challenge: tx.challenge, resource }, Date.now() + 60000);
       store.delete('transaction', tx.id);
     });
@@ -217,7 +217,7 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
         // Live validation makes upstream logout / device-session revocation effective immediately.
         const identity = await upstream.identity(grant.credential);
         if (identity.id !== grant.credential.identity.id || !allowedEmails.includes(identity.email)) { vault?.sessions.drop(token.grantId); return challenge(res); }
-        req.credential = grant.credential; req.grantId = token.grantId; next();
+        req.credential = grant.credential; req.grantId = token.grantId; req.readOnly = !!grant.readOnly; next();
       } catch (error) {
         if (error instanceof UpstreamError && [401,403].includes(error.status)) { vault?.sessions.drop(token.grantId); return challenge(res); }
         return fail(res, 'temporarily_unavailable', 503);
