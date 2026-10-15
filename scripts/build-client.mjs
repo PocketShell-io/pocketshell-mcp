@@ -6,7 +6,7 @@ import { build } from 'esbuild';
 const clientCommit = '1384f1b8a0d30a5e227f0c1b2bf87594696f6b56';
 const coreCommit = 'e87040d19773a710c6813307c98391209b3ddbe1';
 // The consent page's key vault: @pocketshell/core keyVault (vault v1 reference implementation).
-const vaultCoreCommit = '6490d2dc859861ca645c2e459cc76e00ef3c8f8c';
+const vaultCoreCommit = '281890d6f904e67517fe37613504442c026c1b07';
 const temp = process.argv[2] ? null : mkdtempSync(join(tmpdir(), 'mcp-build-'));
 const client = process.argv[2] ? resolve(process.argv[2]) : join(temp, 'pocketshell-client');
 const vaultCore = process.argv[3] ? resolve(process.argv[3]) : join(temp || mkdtempSync(join(tmpdir(), 'mcp-vault-')), 'pocketshell-core-vault');
