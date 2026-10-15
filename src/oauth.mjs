@@ -120,8 +120,9 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
       store.put('code', digest(code), { grantId, clientId: tx.clientId, redirect: tx.redirect, challenge: tx.challenge, resource }, Date.now() + 60000);
       store.delete('transaction', tx.id);
     });
-    // Keys go to process memory only, never into the store above.
-    if (keys.length) vault.sessions.put(grantId, keys, grantExpiry);
+    // Keys go to process memory only, never into the store above. They stay pending until the client
+    // redeems the code, and drop with the code if it never does.
+    if (keys.length) vault.sessions.put(grantId, keys, grantExpiry, { pendingMs: 60000 });
     const target = new URL(tx.redirect); target.searchParams.set('code', code); if (tx.state !== undefined) target.searchParams.set('state', tx.state); target.searchParams.set('iss', issuer);
     return target.href;
   }
@@ -180,7 +181,7 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
         if (!code || code.clientId !== b.client_id || code.redirect !== b.redirect_uri || typeof b.code_verifier !== 'string' || !/^[A-Za-z0-9._~-]{43,128}$/.test(b.code_verifier) || !equal(code.challenge, createHash('sha256').update(b.code_verifier).digest('base64url'))) return null;
         const grant = store.get('grant', code.grantId);
         if (!grant || grant.revoked) return null;
-        store.delete('code', key); return mint(code.grantId, grant);
+        store.delete('code', key); vault?.sessions.activate(code.grantId); return mint(code.grantId, grant);
       }
       if (b.grant_type === 'refresh_token') {
         const key = typeof b.refresh_token === 'string' ? digest(b.refresh_token) : '';

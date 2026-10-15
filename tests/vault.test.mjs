@@ -160,6 +160,22 @@ test('a 30-day TTL does not overflow the timer into a spin', t => {
   assert.equal(sessions.size, 0);
 });
 
+test('keys stay pending until the authorization code is redeemed, then drop with the code', () => {
+  let now = 1_000_000;
+  const sessions = new VaultSessions({ now: () => now });
+  const { pem } = throwawayKey();
+  sessions.put('g', [{ host: 'alpha', keyId: 'a'.repeat(22), pem }], now + 86400000, { pendingMs: 60000 });
+  assert.throws(() => sessions.key('g', 'alpha'), VaultLockedError);
+  assert.equal(sessions.status('g'), null);
+  sessions.activate('g');
+  assert.equal(sessions.key('g', 'alpha').use().toString(), pem);
+  sessions.put('h', [{ host: 'alpha', keyId: 'a'.repeat(22), pem }], now + 86400000, { pendingMs: 60000 });
+  now += 60000;
+  sessions.activate('h');
+  assert.throws(() => sessions.key('h', 'alpha'), VaultLockedError);
+  assert.equal(sessions.size, 1);
+});
+
 test('unlock payload is scoped to configured hosts and private-key PEMs', async () => {
   const { pem, publicKey } = throwawayKey(); const keyId = (await vaultKeyIdForPublicKey(publicKey));
   assert.deepEqual(validateUnlock([{ host: 'alpha', keyId, pem, extra: 1 }], ['alpha']), [{ host: 'alpha', keyId, pem }]);
@@ -268,6 +284,8 @@ test('consent unlock binds only ticked hosts to the grant; locked hosts and revo
   assert.equal((await h.call('/oauth/vault/finish', { csrf: flow.csrf, keys: [{ host: 'gamma', keyId: h.alpha.keyId, pem: h.alpha.pem }] }, { cookie: flow.cookie })).status, 400);
   const finish = await h.browserUnlock(flow, ['alpha']);
   assert.equal(finish.status, 200);
+  assert.equal(h.sessions.size, 1);
+  assert.throws(() => h.sessions.key([...h.store.db.prepare("SELECT id FROM records WHERE kind='grant'").all()].at(-1).id, 'alpha'), VaultLockedError); // pending until redeemed
   assert.equal(h.verified.length, 1);
   const tokens = await h.exchange((await finish.json()).location);
   assert.ok(tokens.access_token);

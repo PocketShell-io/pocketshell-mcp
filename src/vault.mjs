@@ -30,7 +30,7 @@ export class VaultSessions {
     if (!Number.isInteger(idleSeconds) || idleSeconds < 60 || idleSeconds > ttlSeconds) throw new Error('MCP_VAULT_IDLE_SECONDS must be an integer between 60 and the TTL');
     this.ttl = ttlSeconds * 1000; this.idle = idleSeconds * 1000; this.now = now;
   }
-  #deadline(session) { return Math.min(session.expiry, session.lastUsed + this.idle); }
+  #deadline(session) { return session.pendingUntil ?? Math.min(session.expiry, session.lastUsed + this.idle); }
   // One timer per grant at the nearer of absolute expiry and idle deadline; re-armed when use moved it.
   #arm(grantId, session) {
     clearTimeout(session.timer);
@@ -41,12 +41,13 @@ export class VaultSessions {
     }, Math.min(MAX_TIMER, Math.max(0, this.#deadline(session) - this.now())));
     session.timer.unref();
   }
-  // grantExpiry is the grant/refresh-token life; the vault never outlives it.
-  put(grantId, keys, grantExpiry) {
+  // grantExpiry is the grant/refresh-token life; the vault never outlives it. With pendingMs the keys
+  // stay unusable until activate() (the authorization code is redeemed) and drop when that window ends.
+  put(grantId, keys, grantExpiry, { pendingMs } = {}) {
     this.drop(grantId);
     const hosts = new Map();
     for (const { host, keyId, pem } of keys) hosts.set(host, { keyId, key: new SecretKey(pem) });
-    const session = { hosts, expiry: Math.min(this.now() + this.ttl, grantExpiry), lastUsed: this.now(), timer: null };
+    const session = { hosts, expiry: Math.min(this.now() + this.ttl, grantExpiry), lastUsed: this.now(), timer: null, pendingUntil: pendingMs ? this.now() + pendingMs : null };
     this.#grants.set(grantId, session); this.#arm(grantId, session);
     return session.expiry;
   }
@@ -55,8 +56,15 @@ export class VaultSessions {
     const session = this.#grants.get(grantId);
     if (!session) return null;
     if (this.#deadline(session) <= this.now()) { this.drop(grantId); return null; }
+    if (session.pendingUntil) return null;
     session.lastUsed = this.now();
     return session;
+  }
+  activate(grantId) {
+    const session = this.#grants.get(grantId);
+    if (!session?.pendingUntil) return;
+    if (session.pendingUntil <= this.now()) { this.drop(grantId); return; }
+    session.pendingUntil = null; session.lastUsed = this.now(); this.#arm(grantId, session);
   }
   key(grantId, host) {
     const entry = this.#live(grantId)?.hosts.get(host);
