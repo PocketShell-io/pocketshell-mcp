@@ -2,6 +2,7 @@ import { inspect } from 'node:util';
 import { requestJson, UpstreamError } from './upstream.mjs';
 const LOCKED = 'vault locked: re-authorize to unlock';
 export const DEFAULT_VAULT_TTL = 8 * 3600;
+export const DEFAULT_VAULT_IDLE = 1800;
 export class VaultLockedError extends Error {
   constructor() { super(LOCKED); this.code = 'VAULT_LOCKED'; }
 }
@@ -19,27 +20,40 @@ export class SecretKey {
 const PEM = /^-----BEGIN (?:OPENSSH |RSA |EC |)PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END (?:OPENSSH |RSA |EC |)PRIVATE KEY-----\r?\n?$/;
 const KEY_ID = /^[A-Za-z0-9_-]{22}$/;
 // Unlocked vault keys per OAuth grant, held only in this process's memory. Nothing here is ever
-// written to the store, logs or errors; a restart, revoke or TTL expiry drops it.
+// written to the store, logs or errors; a restart, revoke, absolute TTL or idle timeout drops it.
 export class VaultSessions {
   #grants = new Map();
-  constructor({ ttlSeconds = DEFAULT_VAULT_TTL, now = Date.now } = {}) {
+  constructor({ ttlSeconds = DEFAULT_VAULT_TTL, idleSeconds = DEFAULT_VAULT_IDLE, now = Date.now } = {}) {
     if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 30 * 86400) throw new Error('MCP_VAULT_TTL_SECONDS must be an integer between 60 and 2592000');
-    this.ttl = ttlSeconds * 1000; this.now = now;
+    if (!Number.isInteger(idleSeconds) || idleSeconds < 60 || idleSeconds > ttlSeconds) throw new Error('MCP_VAULT_IDLE_SECONDS must be an integer between 60 and the TTL');
+    this.ttl = ttlSeconds * 1000; this.idle = idleSeconds * 1000; this.now = now;
+  }
+  #deadline(session) { return Math.min(session.expiry, session.lastUsed + this.idle); }
+  // One timer per grant at the nearer of absolute expiry and idle deadline; re-armed when use moved it.
+  #arm(grantId, session) {
+    clearTimeout(session.timer);
+    session.timer = setTimeout(() => {
+      if (this.#grants.get(grantId) !== session) return;
+      if (this.#deadline(session) <= this.now()) this.drop(grantId); else this.#arm(grantId, session);
+    }, Math.max(0, this.#deadline(session) - this.now()));
+    session.timer.unref();
   }
   // grantExpiry is the grant/refresh-token life; the vault never outlives it.
   put(grantId, keys, grantExpiry) {
     this.drop(grantId);
     const hosts = new Map();
     for (const { host, keyId, pem } of keys) hosts.set(host, { keyId, key: new SecretKey(pem) });
-    const expiry = Math.min(this.now() + this.ttl, grantExpiry);
-    const timer = setTimeout(() => this.drop(grantId), Math.max(0, expiry - this.now())); timer.unref();
-    this.#grants.set(grantId, { hosts, expiry, timer });
-    return expiry;
+    const session = { hosts, expiry: Math.min(this.now() + this.ttl, grantExpiry), lastUsed: this.now(), timer: null };
+    this.#grants.set(grantId, session); this.#arm(grantId, session);
+    return session.expiry;
   }
+  // Every tool call on the grant counts as use and pushes the idle deadline out.
   #live(grantId) {
     const session = this.#grants.get(grantId);
-    if (session && session.expiry <= this.now()) { this.drop(grantId); return null; }
-    return session || null;
+    if (!session) return null;
+    if (this.#deadline(session) <= this.now()) { this.drop(grantId); return null; }
+    session.lastUsed = this.now();
+    return session;
   }
   key(grantId, host) {
     const entry = this.#live(grantId)?.hosts.get(host);
@@ -48,7 +62,7 @@ export class VaultSessions {
   }
   status(grantId) {
     const session = this.#live(grantId);
-    return session ? { hosts: [...session.hosts.keys()], expiresAt: new Date(session.expiry).toISOString() } : null;
+    return session ? { hosts: [...session.hosts.keys()], expiresAt: new Date(session.expiry).toISOString(), idleExpiresAt: new Date(this.#deadline(session)).toISOString() } : null;
   }
   drop(grantId) {
     const session = this.#grants.get(grantId);

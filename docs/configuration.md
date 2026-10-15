@@ -17,6 +17,7 @@ All examples are placeholders. Supply deployment addresses and account informati
 | `MCP_BIND`, `PORT` | Private listening address and port; defaults to loopback and port 8080 |
 | `MCP_VAULT` | PocketShell only: `on` takes SSH keys from the user's key vault, unlocked during consent, instead of the profile `privateKey`; default off |
 | `MCP_VAULT_TTL_SECONDS` | How long unlocked vault keys stay in memory; default 28800 (8 hours), 60 to 2592000, never longer than the grant |
+| `MCP_VAULT_IDLE_SECONDS` | Drop a grant's unlocked keys after this long without a tool call; default 1800 (30 minutes), 60 to the TTL |
 
 For example, use `https://mcp.example.com` for PocketShell and `https://mcp.example.com/dataops` for DataOps. Their MCP resources are `/mcp` and `/dataops/mcp`. The server advertises the correct discovery addresses for either path.
 

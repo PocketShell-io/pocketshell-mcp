@@ -61,7 +61,7 @@ export function pocketTools({ store, upstream, vault = null, runtimeRoot = '/run
         return { hosts: devices.filter(x => !x.revoked && x.idValid).map(x => {
           const name = profile?.hosts.find(h => h.deviceId === x.id)?.name || null;
           return { id: x.id, presence: x.presence, configured: !!name, name, ...(vault ? { unlocked: !!name && !!unlocked?.hosts.includes(name) } : {}) };
-        }), ...(vault ? { vault: unlocked ? { expiresAt: unlocked.expiresAt } : { locked: true, hint: 'Re-authorize this connector to unlock SSH keys.' } } : {}) };
+        }), ...(vault ? { vault: unlocked ? { expiresAt: unlocked.expiresAt, idleExpiresAt: unlocked.idleExpiresAt } : { locked: true, hint: 'Re-authorize this connector to unlock SSH keys.' } } : {}) };
       }
       if (!profile) throw new Error('SSH profile has not been provisioned for this account');
       validateProfile(profile, { requireKey: !vault });

@@ -78,7 +78,7 @@ test('gated order: KDF from status, verify, then the header', async () => {
 
 test('vault sessions expire at TTL, never outlive the grant, wipe on drop and redact', () => {
   let now = 1_000_000;
-  const sessions = new VaultSessions({ ttlSeconds: 3600, now: () => now });
+  const sessions = new VaultSessions({ ttlSeconds: 3600, idleSeconds: 3600, now: () => now });
   const { pem } = throwawayKey();
   const expiry = sessions.put('g1', [{ host: 'alpha', keyId: 'a'.repeat(22), pem }], now + 86400000);
   assert.equal(expiry, now + 3600000);
@@ -95,8 +95,37 @@ test('vault sessions expire at TTL, never outlive the grant, wipe on drop and re
   assert.equal(sessions.status('g2').expiresAt, new Date(now + 60000).toISOString());
   now += 60000; assert.equal(sessions.status('g2'), null);
   assert.throws(() => new VaultSessions({ ttlSeconds: 10 }), /TTL/);
+  assert.throws(() => new VaultSessions({ ttlSeconds: 600, idleSeconds: 900 }), /IDLE/);
   // Restart: a fresh process has no sessions.
   assert.throws(() => new VaultSessions().key('g1', 'alpha'), VaultLockedError);
+});
+
+test('idle timeout drops keys without a tool call; use extends it up to the absolute TTL', () => {
+  let now = 1_000_000;
+  const sessions = new VaultSessions({ ttlSeconds: 3600, idleSeconds: 600, now: () => now });
+  const { pem } = throwawayKey();
+  sessions.put('g', [{ host: 'alpha', keyId: 'a'.repeat(22), pem }], now + 86400000);
+  for (let i = 0; i < 5; i++) { now += 599000; sessions.key('g', 'alpha'); }
+  assert.equal(sessions.status('g').idleExpiresAt, new Date(now + 600000).toISOString());
+  now += 600000;
+  assert.throws(() => sessions.key('g', 'alpha'), VaultLockedError);
+  assert.equal(sessions.size, 0);
+  // Continuous use still ends at the absolute TTL.
+  sessions.put('h', [{ host: 'alpha', keyId: 'a'.repeat(22), pem }], now + 86400000);
+  const end = now + 3600000;
+  while (now + 500000 < end) { now += 500000; sessions.key('h', 'alpha'); }
+  now = end; assert.throws(() => sessions.key('h', 'alpha'), VaultLockedError);
+});
+
+test('the idle timer drops a grant by itself and re-arms after use', t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+  const sessions = new VaultSessions({ ttlSeconds: 3600, idleSeconds: 600 });
+  sessions.put('r', [{ host: 'alpha', keyId: 'a'.repeat(22), pem: throwawayKey().pem }], Date.now() + 86400000);
+  t.mock.timers.tick(500000); sessions.key('r', 'alpha');
+  t.mock.timers.tick(200000); // the original deadline passes; the timer re-arms for the later one
+  assert.equal(sessions.size, 1);
+  t.mock.timers.tick(400000);
+  assert.equal(sessions.size, 0);
 });
 
 test('unlock payload is scoped to configured hosts and private-key PEMs', () => {
@@ -139,7 +168,7 @@ async function harness(t, { ttlSeconds = 28800 } = {}) {
   const credential = { token: secret(), tokenId: 'synthetic', expiry: Date.now() + 86400000, identity };
   store.put('profile', identity.id, { hosts: [{ name: 'alpha', deviceId: 'device-alpha', user: 'u' }, { name: 'beta', deviceId: 'device-beta', user: 'u' }], pins: 'synthetic' }, Date.now() + 86400000);
   let now = Date.now(); const clock = () => now;
-  const sessions = new VaultSessions({ ttlSeconds, now: clock });
+  const sessions = new VaultSessions({ ttlSeconds, idleSeconds: Math.min(1800, ttlSeconds), now: clock });
   const verified = [];
   const source = { pull: async (_c, slot) => v.slots[slot] ? { kind: 'ok', version: 1, data: v.slots[slot] } : { kind: 'absent' }, status: async () => ({}), verify: async (_c, auth) => { verified.push(auth); return { kind: 'ok' }; } };
   const vault = { sessions, source, hosts: c => store.get('profile', c.identity.id)?.hosts.map(h => h.name) || [], resetUrl: 'https://web.example.com/keys?reset=1' };
