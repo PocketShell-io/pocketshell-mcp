@@ -21,6 +21,8 @@ test('standard SDK completes real HTTP initialization, discovery, tool calls and
  t.after(()=>{server.closeAllConnections();server.close();store.close();});
  const base=issuer;
  const raw=(path,init={})=>fetch(base+path,{...init,headers:init.headers});
+ // no-referrer would make browsers send Origin: null on consent form POSTs, failing the CSRF origin check.
+ assert.equal((await raw('/health')).headers.get('referrer-policy'),'same-origin');
  const denied=await raw('/mcp',{method:'POST'});assert.equal(denied.status,401);assert.match(denied.headers.get('www-authenticate'),/resource_metadata=/);
 
  assert.equal((await raw('/health',{headers:{Origin:'https://other.example.com'}})).status,403);

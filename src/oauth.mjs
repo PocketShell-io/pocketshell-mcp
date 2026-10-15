@@ -12,6 +12,9 @@ export function validRedirect(value) {
   } catch { return false; }
 }
 const DAY = 86400000;
+// Consent forms end in a 303 to the client's callback, and CSP form-action also governs that redirect,
+// so each transaction page allows exactly its own validated callback origin.
+const consentCsp = tx => `default-src 'none'; form-action 'self' ${new URL(tx.redirect).origin}; frame-ancestors 'none'; base-uri 'none'`;
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const html = value => String(value).replace(/[&<>"']/g, x => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[x]);
 const fail = (res, code = 'invalid_request', status = 400) => res.status(status).json({ error: code });
@@ -30,7 +33,7 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
   rootApp.get([`/.well-known/oauth-protected-resource${prefix}`, `/.well-known/oauth-protected-resource${prefix}/mcp`], (_req, res) => res.json({ resource, authorization_servers: [issuer], scopes_supported: [scope], bearer_methods_supported: ['header'] }));
   rootApp.get(`/.well-known/oauth-authorization-server${prefix}`, (_req, res) => res.json({ issuer, authorization_endpoint: `${issuer}/oauth/authorize`, token_endpoint: `${issuer}/oauth/token`, registration_endpoint: `${issuer}/oauth/register`, revocation_endpoint: `${issuer}/oauth/revoke`, scopes_supported: [scope], response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'], code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none'], authorization_response_iss_parameter_supported: true }));
   const challenge = (res) => res.set('WWW-Authenticate', `Bearer resource_metadata="${metadataUrl}", scope="${scope}"`).status(401).json({ error: 'invalid_token' });
-  const page = (res, body) => res.type('html').send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${upstream.kind} connection</title><body><main><h1>Connect ${html(upstream.kind)}</h1>${body}</main></body></html>`);
+  const page = (res, body, tx = null) => (tx ? res.set('Content-Security-Policy', consentCsp(tx)) : res).type('html').send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${upstream.kind} connection</title><body><main><h1>Connect ${html(upstream.kind)}</h1>${body}</main></body></html>`);
   const transaction = req => {
     const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(x => x.trim().split('=')));
     return cookies[cookieName] && store.get('transaction', digest(cookies[cookieName]));
@@ -69,7 +72,7 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
     try {
       tx.device = await upstream.start(`${upstream.kind} MCP (${new URL(tx.redirect).hostname})`);
       tx.expiry = Math.min(tx.expiry, tx.device.expiry); tx.nextPoll = 0; tx.phase = 'pending'; saveTx(tx);
-      page(res, `<p>Approve code <strong>${html(tx.device.userCode)}</strong> in ${html(upstream.kind)}.</p><p><a href="${html(tx.device.approval)}" target="_blank" rel="noopener noreferrer">Open device approval</a></p><p>After approving, return here and continue. No token needs to be copied.</p><form method="post" action="${prefix}/oauth/complete"><input type="hidden" name="csrf" value="${tx.csrf}"><button>Finish connection</button></form>`);
+      page(res, `<p>Approve code <strong>${html(tx.device.userCode)}</strong> in ${html(upstream.kind)}.</p><p><a href="${html(tx.device.approval)}" target="_blank" rel="noopener noreferrer">Open device approval</a></p><p>After approving, return here and continue. No token needs to be copied.</p><form method="post" action="${prefix}/oauth/complete"><input type="hidden" name="csrf" value="${tx.csrf}"><button>Finish connection</button></form>`, tx);
     } catch { store.delete('transaction', tx.id); fail(res, 'temporarily_unavailable', 503); }
   });
   app.post('/oauth/complete', async (req, res) => {
@@ -95,7 +98,7 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
       if (error instanceof UpstreamError && ['authorization_pending', 'slow_down'].includes(error.code)) {
         if (error.code === 'slow_down') tx.device.interval = Math.min(60, tx.device.interval + 5);
         tx.phase = 'pending'; tx.nextPoll = Date.now() + tx.device.interval * 1000; saveTx(tx);
-        return page(res, `<p>Approval is still pending. Wait ${tx.device.interval} seconds, approve in the other tab, then continue.</p><form method="post" action="${prefix}/oauth/complete"><input type="hidden" name="csrf" value="${tx.csrf}"><button>Check approval</button></form>`);
+        return page(res, `<p>Approval is still pending. Wait ${tx.device.interval} seconds, approve in the other tab, then continue.</p><form method="post" action="${prefix}/oauth/complete"><input type="hidden" name="csrf" value="${tx.csrf}"><button>Check approval</button></form>`, tx);
       }
       store.delete('transaction', tx.id); return fail(res, 'access_denied', 403);
     }

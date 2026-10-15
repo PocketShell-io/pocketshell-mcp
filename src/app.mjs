@@ -15,7 +15,9 @@ export function createApp(config) {
   // Trust exactly the local reverse proxy, not arbitrary forwarded IPs.
   app.set('trust proxy', 'loopback');
   app.use((req, res, next) => {
-    res.set({ 'Cache-Control':'no-store', 'Referrer-Policy':'no-referrer', 'X-Content-Type-Options':'nosniff', 'X-Frame-Options':'DENY', 'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
+    // same-origin, not no-referrer: browsers send `Origin: null` on form POSTs under no-referrer,
+    // which the consent CSRF origin check would reject. Cross-origin requests still get no referrer.
+    res.set({ 'Cache-Control':'no-store', 'Referrer-Policy':'same-origin', 'X-Content-Type-Options':'nosniff', 'X-Frame-Options':'DENY', 'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
     if (req.headers.origin && req.headers.origin !== parsed.origin) return res.status(403).json({ error: 'invalid_origin' });
     // Reject DNS rebinding / attacker-controlled Host; proxy preserves public Host.
     if (req.headers.host !== parsed.host) return res.status(400).json({ error: 'invalid_host' });

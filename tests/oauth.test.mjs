@@ -31,6 +31,8 @@ async function fixture(t) {
     const csrf = /name="csrf" value="([^"]+)"/.exec(await auth.text())[1];
     const headers = {cookie,origin:issuer};
     const start = await call('/oauth/start',{csrf},headers); assert.equal(start.status,200);
+    // Browsers apply form-action to the 303 after the next form POST, so the callback origin must be allowed.
+    assert.match(start.headers.get('content-security-policy'),/form-action 'self' https:\/\/assistant\.example\.com;/);
     approved = true;
     const finish = await call('/oauth/complete',{csrf},headers); assert.equal(finish.status,303);
     const target = new URL(finish.headers.get('location')); assert.equal(target.searchParams.get('state'),params.state); assert.equal(target.searchParams.get('iss'),issuer);
