@@ -14,7 +14,7 @@ import { Store, secret } from '../src/store.mjs';
 import { createApp } from '../src/app.mjs';
 import { UpstreamError } from '../src/upstream.mjs';
 import { pocketTools, executePsc } from '../src/pocketshell.mjs';
-import { VaultSessions, VaultLockedError, vaultSource, validateUnlock } from '../src/vault.mjs';
+import { VaultSessions, VaultLockedError, vaultSource, validateUnlock, assertVaultProcessSafe } from '../src/vault.mjs';
 import { KeyVaultStore, hostChoices, toB64u } from '../src/browser/vault-format.js';
 import { makeVault, throwawayKey } from './vault-fixture.mjs';
 const identity = { id: 'synthetic-account', email: 'operator@example.com' };
@@ -126,6 +126,14 @@ test('the idle timer drops a grant by itself and re-arms after use', t => {
   assert.equal(sessions.size, 1);
   t.mock.timers.tick(400000);
   assert.equal(sessions.size, 0);
+});
+
+test('vault mode refuses a debuggable or heap-dumpable process', () => {
+  const safe = { execArgv: ['--disable-sigusr1'], nodeOptions: '', inspectorOpen: false };
+  assertVaultProcessSafe(safe);
+  for (const change of [{ execArgv: ['--disable-sigusr1', '--inspect=0.0.0.0:9229'] }, { execArgv: ['--disable-sigusr1', '--inspect-brk'] }, { nodeOptions: '--heapsnapshot-signal=SIGUSR2' }, { nodeOptions: '--max-old-space-size=512 --heapsnapshot-near-heap-limit=3' }, { inspectorOpen: true }]) assert.throws(() => assertVaultProcessSafe({ ...safe, ...change }), /refuses/);
+  assert.throws(() => assertVaultProcessSafe({ ...safe, execArgv: [] }), /disable-sigusr1/);
+  assertVaultProcessSafe({ ...safe, execArgv: [], nodeOptions: '--disable-sigusr1 --max-old-space-size=512' });
 });
 
 test('unlock payload is scoped to configured hosts and private-key PEMs', () => {

@@ -1,4 +1,5 @@
 import { inspect } from 'node:util';
+import { url as inspectorUrl } from 'node:inspector';
 import { requestJson, UpstreamError } from './upstream.mjs';
 const LOCKED = 'vault locked: re-authorize to unlock';
 export const DEFAULT_VAULT_TTL = 8 * 3600;
@@ -74,6 +75,15 @@ export class VaultSessions {
   dropAll() { for (const id of [...this.#grants.keys()]) this.drop(id); }
   get size() { return this.#grants.size; }
   [inspect.custom]() { return `VaultSessions [${this.#grants.size} grants, redacted]`; }
+}
+// Unlocked keys live in this process's heap, so with the vault on the process must not be
+// debuggable or heap-dumpable: no inspector flags, no heap snapshots, and no SIGUSR1 inspector.
+const UNSAFE_FLAG = /^--(?:inspect(?:-brk|-wait|-port|-publish-uid)?|debug-port|heapsnapshot-signal|heapsnapshot-near-heap-limit|heap-prof|expose-internals)(?:=|$)/;
+export function assertVaultProcessSafe({ execArgv = process.execArgv, nodeOptions = process.env.NODE_OPTIONS || '', inspectorOpen = !!inspectorUrl() } = {}) {
+  const flags = [...execArgv, ...nodeOptions.split(/\s+/).filter(Boolean)];
+  const unsafe = flags.filter(flag => UNSAFE_FLAG.test(flag)).map(flag => flag.split('=')[0]);
+  if (unsafe.length || inspectorOpen) throw new Error(`MCP_VAULT=on refuses to run with a debugger or heap snapshots enabled (${unsafe.join(', ') || 'inspector open'})`);
+  if (!flags.includes('--disable-sigusr1')) throw new Error('MCP_VAULT=on requires node --disable-sigusr1, so a signal cannot open the inspector on unlocked keys');
 }
 // Validates what the consent page posts: only configured hosts, private-key PEMs, bounded size.
 export function validateUnlock(keys, allowedHosts) {
