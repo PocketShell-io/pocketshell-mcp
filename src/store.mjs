@@ -48,6 +48,14 @@ export class Store {
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
     catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }
+  // Removes and returns expired records of one kind, for cleanup that must act on them first.
+  takeExpired(kind) {
+    return this.transaction(() => {
+      const rows = this.db.prepare('SELECT id,value FROM records WHERE kind=? AND expiry <= ?').all(kind, Date.now());
+      this.db.prepare('DELETE FROM records WHERE kind=? AND expiry <= ?').run(kind, Date.now());
+      return rows.map(row => this.open(kind, row.id, row.value));
+    });
+  }
   prune() { this.db.prepare('DELETE FROM records WHERE expiry <= ?').run(Date.now()); }
   close() { this.db.close(); }
 }

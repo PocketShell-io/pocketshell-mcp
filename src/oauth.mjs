@@ -40,10 +40,9 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
   rootApp.get(`/.well-known/oauth-authorization-server${prefix}`, (_req, res) => res.json({ issuer, authorization_endpoint: `${issuer}/oauth/authorize`, token_endpoint: `${issuer}/oauth/token`, registration_endpoint: `${issuer}/oauth/register`, revocation_endpoint: `${issuer}/oauth/revoke`, scopes_supported: [scope], response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'], code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none'], authorization_response_iss_parameter_supported: true }));
   const challenge = (res) => res.set('WWW-Authenticate', `Bearer resource_metadata="${metadataUrl}", scope="${scope}"`).status(401).json({ error: 'invalid_token' });
   const page = (res, body, tx = null, scripts = false) => (tx ? res.set('Content-Security-Policy', consentCsp(tx, scripts)) : res).type('html').send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${upstream.kind} connection</title><body><main><h1>Connect ${html(upstream.kind)}</h1>${body}</main></body></html>`);
-  const transaction = req => {
-    const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(x => x.trim().split('=')));
-    return cookies[cookieName] && store.get('transaction', digest(cookies[cookieName]));
-  };
+  const txNonce = req => Object.fromEntries((req.headers.cookie || '').split(';').map(x => x.trim().split('=')))[cookieName];
+  const transaction = req => { const nonce = txNonce(req); return nonce && store.get('transaction', digest(nonce)); };
+  const txCookie = (res, nonce) => res.cookie(cookieName, nonce, { httpOnly: true, secure: issuer.startsWith('https:'), sameSite: 'lax', path: `${prefix}/oauth`, maxAge: 600000 });
   function csrf(req) {
     const tx = transaction(req);
     return tx && req.get('origin') === origin && equal(req.body?.csrf, tx.csrf) ? tx : null;
@@ -67,7 +66,7 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
     const nonce = secret();
     const tx = { id: digest(nonce), csrf: secret(), clientId: client.client_id, redirect: q.redirect_uri, state: q.state, challenge: q.code_challenge, resource, scope, expiry: Date.now() + 600000, phase: 'consent' };
     saveTx(tx);
-    res.cookie(cookieName, nonce, { httpOnly: true, secure: issuer.startsWith('https:'), sameSite: 'lax', path: `${prefix}/oauth`, maxAge: 600000 });
+    txCookie(res, nonce);
     page(res, `<p>Client: ${html(client.client_name)}</p><p>Return address: ${html(tx.redirect)}</p><p>This grants all ${html(upstream.kind)} tools, including changes and destructive operations, within your existing account permissions, unless you choose read-only. Approve only a connection you just started.</p><form method="post" action="${prefix}/oauth/start"><input type="hidden" name="csrf" value="${tx.csrf}"><p><label><input type="checkbox" name="read_only" value="1"> Read-only: offer only tools that read, and refuse anything that starts, sends, stops or changes data</label></p><button>Continue to device approval</button></form>`);
   });
   app.post('/oauth/start', async (req, res) => {
@@ -93,7 +92,9 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
       }
       if (vault) {
         // Unlock before issuing the code: Argon2id and typing take longer than the code's life.
-        tx.phase = 'unlock'; tx.credential = credential; saveTx(tx);
+        // Device approval may have used most of the window: give the unlock step its own 10 minutes.
+        // If it is abandoned, sweep() revokes this upstream session when the transaction expires.
+        tx.phase = 'unlock'; tx.credential = credential; tx.expiry = Date.now() + 600000; saveTx(tx); txCookie(res, txNonce(req));
         return unlockPage(res, tx);
       }
       res.clearCookie(cookieName, { path: `${prefix}/oauth` }); res.redirect(303, issue(tx, credential));
@@ -208,6 +209,10 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
   });
   return {
     resource,
+    // An unlock transaction that expired unused still holds a live upstream device session; revoke it.
+    async sweep() {
+      for (const tx of store.takeExpired('transaction')) if (tx.credential) await upstream.revoke(tx.credential).catch(() => {});
+    },
     async authenticate(req, res, next) {
       const bearer = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(req.get('authorization') || '')?.[1];
       const token = bearer && store.get('access', digest(bearer));

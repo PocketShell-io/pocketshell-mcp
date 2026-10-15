@@ -61,5 +61,6 @@ export function createApp(config) {
   app.use(prefix || '/', service);
   app.use((_req, res) => res.status(404).json({ error:'not_found' }));
   app.use((_error, _req, res, _next) => { if (!res.headersSent) res.status(400).json({ error:'invalid_request' }); });
+  app.sweepAbandoned = oauth.sweep;
   return app;
 }
