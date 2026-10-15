@@ -89,7 +89,7 @@ function runQuiet(command, args, { env, stdin = '', timeoutMs = 10000 }) {
 // A vault key is never written to a file: a private ssh-agent (0700 call directory) receives it on
 // stdin and expires it after the call's lifetime even if cleanup fails. ssh gets only the public key
 // file via -i with IdentitiesOnly=yes, so it offers exactly this key.
-async function vaultAgent(dir, key, timeoutMs) {
+export async function vaultAgent(dir, key, timeoutMs) {
   const socket = join(dir, 'agent.sock');
   const agent = spawn('ssh-agent', ['-D', '-a', socket], { env: { PATH }, stdio: 'ignore' });
   agent.once('error', () => {});

@@ -21,7 +21,11 @@ try {
       if (repo === 'pocketshell-core') run('npm', ['run', 'build'], dir);
     }
   }
-  if (!process.argv[3]) {
+  if (process.argv[3]) {
+    // A local checkout must be exactly the pinned, reviewed commit.
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: vaultCore, encoding: 'utf8' }).trim();
+    if (head !== vaultCoreCommit) throw new Error(`Key vault core checkout is at ${head}, expected pinned ${vaultCoreCommit}`);
+  } else {
     run('git', ['clone', '--quiet', 'https://github.com/PocketShell-io/pocketshell-core.git', vaultCore]);
     run('git', ['checkout', '--quiet', vaultCoreCommit], vaultCore);
     run('npm', ['ci', '--ignore-scripts'], vaultCore);

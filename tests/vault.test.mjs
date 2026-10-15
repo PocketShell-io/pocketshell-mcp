@@ -13,7 +13,11 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { Store, secret } from '../src/store.mjs';
 import { createApp } from '../src/app.mjs';
 import { UpstreamError } from '../src/upstream.mjs';
-import { pocketTools, executePsc } from '../src/pocketshell.mjs';
+import { pocketTools, executePsc, vaultAgent } from '../src/pocketshell.mjs';
+import { existsSync } from 'node:fs';
+import { spawn, execFile, execFileSync } from 'node:child_process';
+import { connect } from 'node:net';
+import { userInfo } from 'node:os';
 import { VaultSessions, VaultLockedError, vaultSource, validateUnlock, assertVaultProcessSafe, assertDedicatedVaultOrigin } from '../src/vault.mjs';
 import { hostChoices, proxyTransport, toB64u } from '../src/browser/host-choices.js';
 import { makeVault, throwawayKey, memoryTransport, KeyVaultStore, vaultKeyIdForPublicKey } from './vault-fixture.mjs';
@@ -279,6 +283,7 @@ test('consent unlock binds only ticked hosts to the grant; locked hosts and revo
   const html = await flow.unlock.text();
   assert.ok(!html.includes('sync passphrase') && !html.includes(body(h.alpha.pem).slice(0, 24)));
   assert.match(html, /href="https:\/\/web\.example\.com\/keys\?reset=1"/);
+  assert.match(html, /Return address: http:\/\/localhost:9999\/cb/);
   for (const asset of ['vault-unlock.js', 'host-choices.js', 'key-vault.js']) {
     const r = await h.call('/oauth/vault/' + asset); assert.equal(r.status, 200); assert.match(r.headers.get('content-type'), /javascript/);
     assert.match(r.headers.get('content-security-policy'), /default-src 'none'/);
@@ -424,4 +429,27 @@ test('executePsc loads a vault key into a private ssh-agent and writes only the 
   assert.ok(result.agent.startsWith(pub));
   assert.equal(result.privateOnDisk, false); assert.equal(result.sockMode, true);
   assert.deepEqual(await readdir(runtimeRoot), []);
+});
+
+test('a real OpenSSH login succeeds with only the public key file and the per-call agent', async t => {
+  if (!existsSync('/usr/sbin/sshd')) return t.skip('sshd not installed');
+  const root = await mkdtemp(join(tmpdir(), 'mcp-sshd-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const key = throwawayKey();
+  execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(root, 'host')]);
+  await writeFile(join(root, 'authorized_keys'), key.publicKey + '\n', { mode: 0o600 });
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  await writeFile(join(root, 'sshd_config'), [`Port ${port}`, 'ListenAddress 127.0.0.1', `HostKey ${join(root, 'host')}`, `AuthorizedKeysFile ${join(root, 'authorized_keys')}`, `PidFile ${join(root, 'sshd.pid')}`, 'UsePAM no', 'StrictModes no', 'PasswordAuthentication no', 'KbdInteractiveAuthentication no', 'PubkeyAuthentication yes'].join('\n') + '\n');
+  const sshd = spawn('/usr/sbin/sshd', ['-D', '-e', '-f', join(root, 'sshd_config')], { stdio: 'ignore' });
+  t.after(() => sshd.kill('SIGKILL'));
+  for (let i = 0; i < 100; i++) { try { await new Promise((ok, no) => { const s = connect(port, '127.0.0.1', () => { s.end(); ok(); }); s.on('error', no); }); break; } catch { await new Promise(r => setTimeout(r, 50)); } }
+  const sessions = new VaultSessions(); t.after(() => sessions.dropAll());
+  sessions.put('g', [{ host: 'alpha', keyId: 'a'.repeat(22), pem: key.pem }], Date.now() + 60000);
+  const ssh = (env, identity) => new Promise(done => execFile('ssh', ['-F', '/dev/null', '-p', String(port), '-i', identity, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', `${userInfo().username}@127.0.0.1`, 'echo vault-login-ok'], { env: { PATH: process.env.PATH, ...env }, timeout: 20000 }, (error, stdout) => done(error ? 'failed' : stdout.trim())));
+  const dir = await mkdtemp(join(root, 'call-'));
+  const agent = await vaultAgent(dir, sessions.key('g', 'alpha'), 10000);
+  try {
+    assert.equal(await ssh({ SSH_AUTH_SOCK: agent.socket }, agent.publicFile), 'vault-login-ok');
+    // Without the agent, the public key file alone cannot authenticate.
+    assert.equal(await ssh({}, agent.publicFile), 'failed');
+  } finally { agent.stop(); }
 });
