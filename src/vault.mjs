@@ -95,6 +95,15 @@ export function assertVaultProcessSafe({ execArgv = process.execArgv, nodeOption
   if (unsafe.length || inspectorOpen) throw new Error(`MCP_VAULT=on refuses to run with a debugger or heap snapshots enabled (${unsafe.join(', ') || 'inspector open'})`);
   if (!flags.includes('--disable-sigusr1')) throw new Error('MCP_VAULT=on requires node --disable-sigusr1, so a signal cannot open the inspector on unlocked keys');
 }
+// The unlock page holds the passphrase, which opens the whole vault. Any other code on the same origin
+// (another service under a path prefix, or an XSS there) could script that page, so vault mode needs
+// a bare origin that the operator confirms serves nothing else. A process cannot see its neighbours,
+// so this fails closed without that confirmation.
+export function assertDedicatedVaultOrigin(issuer, confirmed) {
+  const url = new URL(issuer);
+  if (url.pathname !== '/' && url.pathname !== '') throw new Error('MCP_VAULT=on needs MCP_ISSUER to be a bare origin with no service path');
+  if (confirmed !== url.origin) throw new Error(`MCP_VAULT=on needs a dedicated origin: set MCP_VAULT_DEDICATED_ORIGIN=${url.origin} to confirm nothing else is served there`);
+}
 // Validates what the consent page posts: only configured hosts, private-key PEMs, bounded size.
 export function validateUnlock(keys, allowedHosts) {
   if (!Array.isArray(keys) || keys.length < 1 || keys.length > 20) throw new Error('invalid_vault_keys');

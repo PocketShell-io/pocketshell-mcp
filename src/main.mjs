@@ -5,7 +5,7 @@ import { pocketUpstream, dataopsUpstream } from './upstream.mjs';
 import { pocketTools } from './pocketshell.mjs';
 import { dataopsTools } from './dataops.mjs';
 import { createApp } from './app.mjs';
-import { VaultSessions, vaultSource, DEFAULT_VAULT_TTL, DEFAULT_VAULT_IDLE, assertVaultProcessSafe } from './vault.mjs';
+import { VaultSessions, vaultSource, DEFAULT_VAULT_TTL, DEFAULT_VAULT_IDLE, assertVaultProcessSafe, assertDedicatedVaultOrigin } from './vault.mjs';
 process.umask(0o077);
 const kind = process.env.MCP_SERVICE || 'pocketshell';
 if (!['pocketshell','dataops'].includes(kind)) throw new Error('Unknown MCP_SERVICE');
@@ -18,7 +18,7 @@ const remote = kind === 'pocketshell'
   : dataopsUpstream(remoteConfig);
 // Opt-in: SSH keys come from the user's vault, unlocked at consent and held only in memory.
 const vaultEnabled = kind === 'pocketshell' && ['1', 'on', 'true'].includes((process.env.MCP_VAULT || '').toLowerCase());
-if (vaultEnabled) assertVaultProcessSafe();
+if (vaultEnabled) { assertVaultProcessSafe(); assertDedicatedVaultOrigin(process.env.MCP_ISSUER, process.env.MCP_VAULT_DEDICATED_ORIGIN); }
 const sessions = vaultEnabled ? new VaultSessions({ ttlSeconds: Number(process.env.MCP_VAULT_TTL_SECONDS || DEFAULT_VAULT_TTL), idleSeconds: Number(process.env.MCP_VAULT_IDLE_SECONDS || DEFAULT_VAULT_IDLE) }) : null;
 const vault = sessions && { sessions, source: vaultSource({ base: remote.base }), hosts: credential => store.get('profile', credential.identity.id)?.hosts.map(h => h.name) || [], resetUrl: new URL('/keys?reset=1', remoteConfig.webOrigin).href };
 const tools = kind === 'pocketshell' ? pocketTools({ store, upstream: remote, vault: sessions }) : dataopsTools({ upstream: remote });

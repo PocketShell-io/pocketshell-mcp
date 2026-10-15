@@ -14,7 +14,7 @@ import { Store, secret } from '../src/store.mjs';
 import { createApp } from '../src/app.mjs';
 import { UpstreamError } from '../src/upstream.mjs';
 import { pocketTools, executePsc } from '../src/pocketshell.mjs';
-import { VaultSessions, VaultLockedError, vaultSource, validateUnlock, assertVaultProcessSafe } from '../src/vault.mjs';
+import { VaultSessions, VaultLockedError, vaultSource, validateUnlock, assertVaultProcessSafe, assertDedicatedVaultOrigin } from '../src/vault.mjs';
 import { hostChoices, proxyTransport, toB64u } from '../src/browser/host-choices.js';
 import { makeVault, throwawayKey, memoryTransport, KeyVaultStore, vaultKeyIdForPublicKey } from './vault-fixture.mjs';
 const identity = { id: 'synthetic-account', email: 'operator@example.com' };
@@ -174,6 +174,13 @@ test('keys stay pending until the authorization code is redeemed, then drop with
   sessions.activate('h');
   assert.throws(() => sessions.key('h', 'alpha'), VaultLockedError);
   assert.equal(sessions.size, 1);
+});
+
+test('vault mode needs a confirmed dedicated origin without a service path', () => {
+  assertDedicatedVaultOrigin('https://mcp.example.com', 'https://mcp.example.com');
+  assert.throws(() => assertDedicatedVaultOrigin('https://mcp.example.com/pocketshell', 'https://mcp.example.com'), /bare origin/);
+  assert.throws(() => assertDedicatedVaultOrigin('https://mcp.example.com', undefined), /MCP_VAULT_DEDICATED_ORIGIN=https:\/\/mcp\.example\.com/);
+  assert.throws(() => assertDedicatedVaultOrigin('https://mcp.example.com', 'https://other.example.com'), /dedicated/);
 });
 
 test('unlock payload is scoped to configured hosts and private-key PEMs', async () => {
