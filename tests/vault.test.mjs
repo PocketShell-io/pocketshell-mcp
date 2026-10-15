@@ -148,6 +148,18 @@ test('vault mode refuses a debuggable or heap-dumpable process', () => {
   assertVaultProcessSafe({ ...safe, execArgv: [], nodeOptions: '--disable-sigusr1 --max-old-space-size=512' });
 });
 
+test('a 30-day TTL does not overflow the timer into a spin', t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+  const sessions = new VaultSessions({ ttlSeconds: 30 * 86400, idleSeconds: 30 * 86400 });
+  sessions.put('g', [{ host: 'alpha', keyId: 'a'.repeat(22), pem: throwawayKey().pem }], Date.now() + 31 * 86400000);
+  t.mock.timers.tick(1000);
+  assert.equal(sessions.size, 1);
+  t.mock.timers.tick(2 ** 31); // the capped timer fires and re-arms
+  assert.equal(sessions.size, 1);
+  t.mock.timers.tick(30 * 86400000);
+  assert.equal(sessions.size, 0);
+});
+
 test('unlock payload is scoped to configured hosts and private-key PEMs', async () => {
   const { pem, publicKey } = throwawayKey(); const keyId = (await vaultKeyIdForPublicKey(publicKey));
   assert.deepEqual(validateUnlock([{ host: 'alpha', keyId, pem, extra: 1 }], ['alpha']), [{ host: 'alpha', keyId, pem }]);

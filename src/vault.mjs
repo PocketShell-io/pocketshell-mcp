@@ -4,6 +4,7 @@ import { requestJson, UpstreamError } from './upstream.mjs';
 const LOCKED = 'vault locked: re-authorize to unlock';
 export const DEFAULT_VAULT_TTL = 8 * 3600;
 export const DEFAULT_VAULT_IDLE = 1800;
+const MAX_TIMER = 2 ** 31 - 1;
 export class VaultLockedError extends Error {
   constructor() { super(LOCKED); this.code = 'VAULT_LOCKED'; }
 }
@@ -36,7 +37,8 @@ export class VaultSessions {
     session.timer = setTimeout(() => {
       if (this.#grants.get(grantId) !== session) return;
       if (this.#deadline(session) <= this.now()) this.drop(grantId); else this.#arm(grantId, session);
-    }, Math.max(0, this.#deadline(session) - this.now()));
+      // setTimeout overflows above 2^31-1 ms (fires at once, then spins); a capped timer just re-arms.
+    }, Math.min(MAX_TIMER, Math.max(0, this.#deadline(session) - this.now())));
     session.timer.unref();
   }
   // grantExpiry is the grant/refresh-token life; the vault never outlives it.
