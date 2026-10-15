@@ -1,12 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { build } from 'esbuild';
 const clientCommit = '1384f1b8a0d30a5e227f0c1b2bf87594696f6b56';
 const coreCommit = 'e87040d19773a710c6813307c98391209b3ddbe1';
+// The consent page's key vault: @pocketshell/core keyVault (vault v1 reference implementation).
+const vaultCoreCommit = '6490d2dc859861ca645c2e459cc76e00ef3c8f8c';
 const temp = process.argv[2] ? null : mkdtempSync(join(tmpdir(), 'mcp-build-'));
 const client = process.argv[2] ? resolve(process.argv[2]) : join(temp, 'pocketshell-client');
+const vaultCore = process.argv[3] ? resolve(process.argv[3]) : join(temp || mkdtempSync(join(tmpdir(), 'mcp-vault-')), 'pocketshell-core-vault');
 function run(command, args, cwd) { execFileSync(command, args, { cwd, stdio: 'inherit' }); }
 try {
   if (temp) {
@@ -18,8 +21,20 @@ try {
       if (repo === 'pocketshell-core') run('npm', ['run', 'build'], dir);
     }
   }
+  if (!process.argv[3]) {
+    run('git', ['clone', '--quiet', 'https://github.com/PocketShell-io/pocketshell-core.git', vaultCore]);
+    run('git', ['checkout', '--quiet', vaultCoreCommit], vaultCore);
+    run('npm', ['ci', '--ignore-scripts'], vaultCore);
+  }
   mkdirSync('vendor', { recursive: true });
   await build({ entryPoints: [join(client, 'src/cli.ts')], outfile: 'vendor/psc.mjs', bundle: true, platform: 'node', target: 'node24', format: 'esm', banner: { js: "import { createRequire as __pscCreateRequire } from 'node:module'; const require = __pscCreateRequire(import.meta.url);" } });
   await build({ entryPoints: [join(client, 'src/clientCore.ts')], outfile: 'vendor/client-core.mjs', bundle: true, platform: 'node', target: 'node24', format: 'esm', banner: { js: "import { createRequire as __pscCreateRequire } from 'node:module'; const require = __pscCreateRequire(import.meta.url);" } });
-  console.log('Built shared PocketShell core and CLI runtimes (excluded from Git).');
-} finally { if (temp) rmSync(temp, { recursive: true, force: true }); }
+  // One ESM file for browsers and Node (WebCrypto + hash-wasm WASM), served to the consent page.
+  await build({ entryPoints: [join(vaultCore, 'src/keyVault/index.ts')], outfile: 'vendor/key-vault.mjs', bundle: true, platform: 'neutral', mainFields: ['module', 'main'], target: ['es2022'], format: 'esm', legalComments: 'none' });
+  // Core's known-answer vectors (throwaway values) let the tests check this exact bundle.
+  copyFileSync(join(vaultCore, 'tests/keyVault/fixtures/vault-v1-vectors.json'), 'vendor/vault-v1-vectors.json');
+  console.log('Built shared PocketShell core, CLI runtimes and key vault bundle (excluded from Git).');
+} finally {
+  if (temp) rmSync(temp, { recursive: true, force: true });
+  else if (!process.argv[3]) rmSync(dirname(vaultCore), { recursive: true, force: true });
+}

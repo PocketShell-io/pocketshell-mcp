@@ -7,3 +7,5 @@ coverage/
 vendor/psc.mjs
 .build/
 vendor/client-core.mjs
+vendor/key-vault.mjs
+vendor/vault-v1-vectors.json

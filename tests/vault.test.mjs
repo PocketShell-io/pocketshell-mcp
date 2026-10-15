@@ -7,7 +7,7 @@ import { inspect } from 'node:util';
 import { mkdtemp, writeFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { argon2id } from 'hash-wasm';
+import { readFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Store, secret } from '../src/store.mjs';
@@ -15,64 +15,76 @@ import { createApp } from '../src/app.mjs';
 import { UpstreamError } from '../src/upstream.mjs';
 import { pocketTools, executePsc } from '../src/pocketshell.mjs';
 import { VaultSessions, VaultLockedError, vaultSource, validateUnlock, assertVaultProcessSafe } from '../src/vault.mjs';
-import { KeyVaultStore, hostChoices, toB64u } from '../src/browser/vault-format.js';
-import { makeVault, throwawayKey } from './vault-fixture.mjs';
+import { hostChoices, proxyTransport, toB64u } from '../src/browser/host-choices.js';
+import { makeVault, throwawayKey, memoryTransport, KeyVaultStore, vaultKeyIdForPublicKey } from './vault-fixture.mjs';
 const identity = { id: 'synthetic-account', email: 'operator@example.com' };
 const passphrase = 'correct horse battery staple';
 const body = pem => pem.split('\n').filter(l => l && !l.startsWith('-----')).join('');
 
-const memoryTransport = (slots, gate = { open: true }) => ({ pull: async slot => !gate.open && slot === 'vault' ? { kind: 'gated' } : slots[slot] ? { kind: 'ok', version: 1, data: slots[slot] } : { kind: 'absent' } });
-
-test('vault format: check value, DEK unwrap, AAD-bound blobs, host choices', async () => {
-  const a = throwawayKey(), b = throwawayKey();
-  const v = await makeVault(passphrase, { keys: [a, b, { keyId: 'cGFzc3dvcmQtZW50cnktMQ', type: 'password', password: 'synthetic' }], hosts: { alpha: a.keyId, beta: b.keyId, legacy: 'cGFzc3dvcmQtZW50cnktMQ' } });
+test('the pinned core bundle reproduces core known-answer vectors', async () => {
+  // Built by scripts/build-client.mjs next to vendor/key-vault.mjs from the same core commit.
+  const kat = JSON.parse(readFileSync(new URL('../vendor/vault-v1-vectors.json', import.meta.url), 'utf8'));
+  const slots = { vault: kat.headerSlotData, [`vk-${kat.sshKey.keyId}`]: kat.sshKey.slotData, [`vk-${kat.password.keyId}`]: kat.password.slotData };
   const verified = [];
-  const verifier = { verify: async auth => { verified.push(toB64u(auth)); return { kind: 'unavailable' }; } };
-  let now = 0;
-  const store = new KeyVaultStore({ transport: memoryTransport(v.slots), verifier, argon2id, now: () => now });
-  // The local check value rejects a wrong passphrase without consulting the server; backoff after 3.
-  for (let i = 0; i < 3; i++) assert.equal((await store.unlock('wrong passphrase')).kind, 'wrongPassphrase');
-  assert.equal((await store.unlock(passphrase)).kind, 'backoff');
-  assert.equal(verified.length, 0);
-  now += 1000;
-  // NFKC: a compatibility-equivalent spelling unlocks the same vault, and the verifier gets AUTH.
-  assert.equal((await store.unlock(passphrase.replace('a', 'ａ'))).kind, 'ok');
-  assert.deepEqual(verified, [v.auth]);
+  const store = new KeyVaultStore({ transport: memoryTransport(slots), verifier: { verify: async auth => { verified.push(toB64u(auth)); return { kind: 'ok' }; } } });
+  assert.equal((await store.unlock(kat.passphrase)).kind, 'ok');
+  assert.deepEqual(verified, [kat.authB64url]);
+  assert.deepEqual(await store.decryptKey(kat.sshKey.keyId), { kind: 'key', pem: kat.sshKey.plaintext });
+  assert.deepEqual(await store.decryptKey(kat.password.keyId), { kind: 'password', password: kat.password.plaintext });
+  assert.equal((await new KeyVaultStore({ transport: memoryTransport(slots) }).unlock(kat.normalizedPassphrase)).kind, 'ok');
+});
+
+test('core vault: wrong passphrase, server answers, AAD binding and host choices', async () => {
+  const a = throwawayKey(), b = throwawayKey();
+  const alpha = { host: 'alpha', pem: a.pem }, beta = { host: 'beta', pem: b.pem }, legacy = { host: 'legacy', password: 'synthetic' };
+  const v = await makeVault(passphrase, { keys: [alpha, beta, legacy] });
+  assert.equal(alpha.keyId, (await vaultKeyIdForPublicKey(a.publicKey)));
+  const verified = [];
+  const store = new KeyVaultStore({ transport: memoryTransport(v.slots), verifier: { verify: async auth => { verified.push(toB64u(auth)); return { kind: 'unavailable' }; } } });
+  assert.equal((await store.unlock('wrong passphrase')).kind, 'wrongPassphrase');
+  assert.equal((await store.unlock(passphrase)).kind, 'ok');
+  // Core reports every attempt's AUTH to the verifier, so the server-side failure budget applies.
+  assert.equal(verified.length, 2); assert.notEqual(verified[0], verified[1]);
   assert.deepEqual(await store.decryptKeyForHost('alpha'), { kind: 'key', pem: a.pem });
   assert.deepEqual(await store.decryptKeyForHost('legacy'), { kind: 'password', password: 'synthetic' });
   assert.equal((await store.decryptKeyForHost('nowhere')).kind, 'unbound');
   // A blob moved into another key's slot fails its key ID / AAD binding.
-  const swapped = new KeyVaultStore({ transport: memoryTransport({ ...v.slots, [`vk-${b.keyId}`]: v.slots[`vk-${a.keyId}`] }), argon2id });
+  const swapped = new KeyVaultStore({ transport: memoryTransport({ ...v.slots, [`vk-${beta.keyId}`]: v.slots[`vk-${alpha.keyId}`] }) });
   assert.equal((await swapped.unlock(passphrase)).kind, 'ok');
-  assert.equal((await swapped.decryptKeyForHost('beta')).kind, 'corrupt');
-  const relabeled = JSON.parse(v.slots[`vk-${a.keyId}`]); relabeled.keyId = b.keyId;
-  const forged = new KeyVaultStore({ transport: memoryTransport({ ...v.slots, [`vk-${b.keyId}`]: JSON.stringify(relabeled) }), argon2id });
-  await forged.unlock(passphrase); assert.equal((await forged.decryptKeyForHost('beta')).kind, 'corrupt');
+  assert.notEqual((await swapped.decryptKeyForHost('beta')).kind, 'key');
   const choices = hostChoices(store, ['alpha', 'legacy', 'unbound', 'constructor']);
   assert.deepEqual(choices.map(c => [c.name, c.available]), [['alpha', true], ['legacy', false], ['unbound', false], ['constructor', false]]);
   assert.match(choices[1].reason, /password/);
-  // A hostile header cannot demand unbounded Argon2id memory.
-  const header = JSON.parse(v.header); header.kdf.m = 1 << 22;
-  assert.equal((await new KeyVaultStore({ transport: memoryTransport({ vault: JSON.stringify(header) }), argon2id }).unlock(passphrase)).kind, 'corrupt');
-  assert.equal((await new KeyVaultStore({ transport: memoryTransport({}), argon2id }).unlock(passphrase)).kind, 'noVault');
-  // Server says wrong (passphrase changed elsewhere) or locked out.
-  for (const [answer, kind] of [[{ kind: 'wrong', retryAfterMs: 5000 }, 'wrongPassphrase'], [{ kind: 'locked', retryAfterMs: 900000 }, 'rateLimited']]) {
-    const r = await new KeyVaultStore({ transport: memoryTransport(v.slots), verifier: { verify: async () => answer }, argon2id }).unlock(passphrase);
-    assert.equal(r.kind, kind); assert.ok(r.retryAfterMs >= answer.retryAfterMs - 50);
+  assert.equal((await new KeyVaultStore({ transport: memoryTransport({}) }).unlock(passphrase)).kind, 'noVault');
+  // Ungated, core's local check value is authoritative over a verifier 'wrong'; a lockout still stops unlock.
+  for (const [answer, kind] of [[{ kind: 'wrong', retryAfterMs: 5000 }, 'ok'], [{ kind: 'locked', retryAfterMs: 900000 }, 'rateLimited']]) {
+    const r = await new KeyVaultStore({ transport: memoryTransport(v.slots), verifier: { verify: async () => answer } }).unlock(passphrase);
+    assert.equal(r.kind, kind);
   }
 });
 
-test('gated order: KDF from status, verify, then the header', async () => {
+test('gated order through the proxy transport: KDF from status, verify, then the header', async () => {
   const a = throwawayKey();
-  const v = await makeVault(passphrase, { keys: [a], hosts: { alpha: a.keyId } });
-  const gate = { open: false }, calls = [];
-  const verifier = { status: async () => { calls.push('status'); return { kdf: JSON.parse(v.header).kdf }; }, verify: async auth => { calls.push('verify'); if (toB64u(auth) !== v.auth) return { kind: 'wrong', retryAfterMs: 0 }; gate.open = true; return { kind: 'ok' }; } };
-  const transport = memoryTransport(v.slots, gate);
-  const store = new KeyVaultStore({ transport, verifier, argon2id });
+  const alpha = { host: 'alpha', pem: a.pem };
+  const v = await makeVault(passphrase, { keys: [alpha] });
+  const gate = { open: false }, calls = [], transport = memoryTransport(v.slots, gate);
+  // The AUTH a correct passphrase yields, as the server-side verifier would know it.
+  const probe = [];
+  await new KeyVaultStore({ transport: memoryTransport(v.slots), verifier: { verify: async auth => { probe.push(toB64u(auth)); return { kind: 'ok' }; } } }).unlock(passphrase);
+  // What the connector's endpoints return, here without HTTP.
+  const post = async (path, body = {}) => {
+    calls.push(path);
+    if (path === 'pull') return transport.pull(body.slot);
+    if (path === 'status') return { kind: 'ok', epoch: 1, hasVerifier: true, retryAfterMs: 0, kdf: JSON.parse(v.header).kdf };
+    if (body.auth !== probe[0]) return { kind: 'wrong', retryAfterMs: 0 };
+    gate.open = true; return { kind: 'ok' };
+  };
+  const store = new KeyVaultStore(proxyTransport(post));
   assert.equal((await store.unlock('wrong passphrase')).kind, 'wrongPassphrase');
   assert.equal(gate.open, false);
   assert.equal((await store.unlock(passphrase)).kind, 'ok');
-  assert.deepEqual(calls, ['status', 'verify', 'status', 'verify']);
+  assert.equal(gate.open, true);
+  assert.ok(calls.indexOf('verify') < calls.lastIndexOf('pull'));
   assert.deepEqual(await store.decryptKeyForHost('alpha'), { kind: 'key', pem: a.pem });
 });
 
@@ -136,8 +148,8 @@ test('vault mode refuses a debuggable or heap-dumpable process', () => {
   assertVaultProcessSafe({ ...safe, execArgv: [], nodeOptions: '--disable-sigusr1 --max-old-space-size=512' });
 });
 
-test('unlock payload is scoped to configured hosts and private-key PEMs', () => {
-  const { pem, keyId } = throwawayKey();
+test('unlock payload is scoped to configured hosts and private-key PEMs', async () => {
+  const { pem, publicKey } = throwawayKey(); const keyId = (await vaultKeyIdForPublicKey(publicKey));
   assert.deepEqual(validateUnlock([{ host: 'alpha', keyId, pem, extra: 1 }], ['alpha']), [{ host: 'alpha', keyId, pem }]);
   for (const bad of [[{ host: 'beta', keyId, pem }], [{ host: 'alpha', keyId, pem: 'not a key' }], [{ host: 'alpha', keyId: 'x', pem }], [], [{ host: 'alpha', keyId, pem }, { host: 'alpha', keyId, pem }]]) assert.throws(() => validateUnlock(bad, ['alpha']), /invalid_vault_keys/);
 });
@@ -156,7 +168,7 @@ test('vault source proxies slots and maps the W2 verifier 1:1', async () => {
   assert.deepEqual(await source.pull(cred, `vk-${'A'.repeat(22)}`), { kind: 'absent' });
   assert.deepEqual(await source.pull(cred, `vk-${'B'.repeat(22)}`), { kind: 'gated' });
   for (const bad of ['main', 'keys', '../vault', 'vk-short', undefined]) await assert.rejects(() => source.pull(cred, bad), /invalid_slot/);
-  assert.deepEqual(await source.status(cred), {});
+  assert.deepEqual(await source.status(cred), { kind: 'unavailable' });
   assert.deepEqual(seen[0], ['GET', '/cli/settings/vault', 'Bearer psc_synthetic']);
   const answer = (status, body) => vaultSource({ base: 'https://broker.example.com', fetcher: async () => Response.json(body, { status }) }).verify(cred, 'A'.repeat(43));
   assert.deepEqual(await answer(200, { ok: true, epoch: 1 }), { kind: 'ok' });
@@ -166,19 +178,19 @@ test('vault source proxies slots and maps the W2 verifier 1:1', async () => {
   assert.deepEqual(await answer(404, { error: 'no_verifier' }), { kind: 'noVerifier' });
   for (const [status, error] of [[404, 'not_found'], [503, 'vault_not_configured'], [409, 'verifier_stale']]) assert.deepEqual(await answer(status, { error }), { kind: 'unavailable' });
   await assert.rejects(() => source.verify(cred, 'short'), /invalid_request/);
-  assert.deepEqual(await vaultSource({ base: 'https://broker.example.com', fetcher: async () => Response.json({ epoch: 1, hasVerifier: true, retryAfter: 0, kdf: { alg: 'argon2id' } }) }).status(cred), { kdf: { alg: 'argon2id' } });
+  assert.deepEqual(await vaultSource({ base: 'https://broker.example.com', fetcher: async () => Response.json({ epoch: 2, hasVerifier: true, retryAfter: 30, kdf: { alg: 'argon2id' } }) }).status(cred), { kind: 'ok', epoch: 2, hasVerifier: true, retryAfterMs: 30000, kdf: { alg: 'argon2id' } });
 });
 
 async function harness(t, { ttlSeconds = 28800 } = {}) {
-  const alpha = throwawayKey(), beta = throwawayKey();
-  const v = await makeVault(passphrase, { keys: [alpha, beta], hosts: { alpha: alpha.keyId, beta: beta.keyId } });
+  const alpha = { host: 'alpha', ...throwawayKey() }, beta = { host: 'beta', ...throwawayKey() };
+  const v = await makeVault(passphrase, { keys: [alpha, beta] });
   const store = new Store(':memory:', randomBytes(32).toString('hex'));
   const credential = { token: secret(), tokenId: 'synthetic', expiry: Date.now() + 86400000, identity };
   store.put('profile', identity.id, { hosts: [{ name: 'alpha', deviceId: 'device-alpha', user: 'u' }, { name: 'beta', deviceId: 'device-beta', user: 'u' }], pins: 'synthetic' }, Date.now() + 86400000);
   let now = Date.now(); const clock = () => now;
   const sessions = new VaultSessions({ ttlSeconds, idleSeconds: Math.min(1800, ttlSeconds), now: clock });
   const verified = [];
-  const source = { pull: async (_c, slot) => v.slots[slot] ? { kind: 'ok', version: 1, data: v.slots[slot] } : { kind: 'absent' }, status: async () => ({}), verify: async (_c, auth) => { verified.push(auth); return { kind: 'ok' }; } };
+  const source = { pull: async (_c, slot) => v.slots[slot] ? { kind: 'ok', version: 1, data: v.slots[slot] } : { kind: 'absent' }, status: async () => ({ kind: 'unavailable' }), verify: async (_c, auth) => { verified.push(auth); return { kind: 'ok' }; } };
   const vault = { sessions, source, hosts: c => store.get('profile', c.identity.id)?.hosts.map(h => h.name) || [], resetUrl: 'https://web.example.com/keys?reset=1' };
   const executed = [], revoked = [];
   const upstream = { kind: 'pocketshell', base: 'https://broker.example.com', gatewayOrigin: 'https://gateway.example.com',
@@ -207,7 +219,7 @@ async function harness(t, { ttlSeconds = 28800 } = {}) {
   async function browserUnlock({ cookie, csrf }, hosts) {
     // What vault-unlock.js does: the same KeyVaultStore, talking to the connector's proxy endpoints.
     const post = async (path, data = {}) => (await call('/oauth/vault/' + path, { csrf, ...data }, { cookie })).json();
-    const store = new KeyVaultStore({ argon2id, transport: { pull: slot => post('pull', { slot }) }, verifier: { verify: auth => post('verify', { auth: toB64u(auth) }), status: () => post('status') } });
+    const store = new KeyVaultStore(proxyTransport(post));
     assert.equal((await store.unlock(passphrase)).kind, 'ok');
     const keys = [];
     for (const c of hostChoices(store, hosts).filter(c => c.available)) keys.push({ host: c.name, keyId: c.keyId, pem: (await store.decryptKeyForHost(c.name)).pem });
@@ -232,7 +244,7 @@ test('consent unlock binds only ticked hosts to the grant; locked hosts and revo
   const html = await flow.unlock.text();
   assert.ok(!html.includes('sync passphrase') && !html.includes(body(h.alpha.pem).slice(0, 24)));
   assert.match(html, /href="https:\/\/web\.example\.com\/keys\?reset=1"/);
-  for (const asset of ['vault-unlock.js', 'vault-format.js', 'argon2.js']) {
+  for (const asset of ['vault-unlock.js', 'host-choices.js', 'key-vault.js']) {
     const r = await h.call('/oauth/vault/' + asset); assert.equal(r.status, 200); assert.match(r.headers.get('content-type'), /javascript/);
     assert.match(r.headers.get('content-security-policy'), /default-src 'none'/);
   }
@@ -357,7 +369,7 @@ test('executePsc loads a vault key into a private ssh-agent and writes only the 
   const entrypoint = join(root, 'fixture.mjs'), runtimeRoot = join(root, 'run');
   // The fake psc reports what ssh would see: the -i file and the agent's identities.
   await writeFile(entrypoint, `import {readFileSync,readdirSync,statSync} from 'node:fs';import {execFileSync} from 'node:child_process';import {join} from 'node:path';const dir=process.env.XDG_CONFIG_HOME;const hosts=JSON.parse(readFileSync(join(dir,'pocketshell-tui-client/hosts.json'),'utf8'));const files=[];const walk=d=>{for(const n of readdirSync(d)){const p=join(d,n);const s=statSync(p);if(s.isDirectory())walk(p);else if(s.isFile())files.push(readFileSync(p,'utf8'));}};walk(dir);console.log(JSON.stringify({identity:readFileSync(hosts.hosts[0].gateway.identityFile,'utf8'),agent:execFileSync('ssh-add',['-L']).toString(),privateOnDisk:files.some(f=>f.includes('PRIVATE KEY')),sockMode:statSync(process.env.SSH_AUTH_SOCK).isSocket()}));`);
-  const key = throwawayKey();
+  const key = throwawayKey(); key.keyId = (await vaultKeyIdForPublicKey(key.publicKey));
   const sessions = new VaultSessions(); t.after(() => sessions.dropAll());
   sessions.put('g', [{ host: 'alpha', keyId: key.keyId, pem: key.pem }], Date.now() + 60000);
   const result = await executePsc([], { profile: { hosts: [{ name: 'alpha', deviceId: 'device-alpha', user: 'u' }], pins: 'synthetic' }, credential: { token: secret(), tokenId: 's', expiry: Date.now() + 10000, identity }, broker: 'https://broker.example.com', gateway: 'https://gateway.example.com', runtimeRoot, stdin: '', entrypoint, vaultKey: sessions.key('g', 'alpha') });

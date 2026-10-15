@@ -4,13 +4,17 @@ import { digest, secret } from './store.mjs';
 import { UpstreamError } from './upstream.mjs';
 import { isIP } from 'node:net';
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { validateUnlock, VAULT_SLOT } from './vault.mjs';
-const browserAsset = name => readFileSync(new URL(`./browser/${name}`, import.meta.url), 'utf8');
-const assets = { 'vault-unlock.js': browserAsset('vault-unlock.js'), 'vault-format.js': browserAsset('vault-format.js'), 'argon2.js': readFileSync(createRequire(import.meta.url).resolve('hash-wasm/dist/argon2.umd.min.js'), 'utf8') };
+// The consent page runs @pocketshell/core's keyVault, bundled at a pinned commit by scripts/build-client.mjs.
+function vaultAssets() {
+  const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
+  let core;
+  try { core = read('../vendor/key-vault.mjs'); } catch { throw new Error('MCP_VAULT needs vendor/key-vault.mjs; run node scripts/build-client.mjs'); }
+  return { 'vault-unlock.js': read('./browser/vault-unlock.js'), 'host-choices.js': read('./browser/host-choices.js'), 'key-vault.js': core };
+}
 // Consent forms end in a 303 to the client's callback, and CSP form-action also governs that redirect,
 // so each transaction page allows exactly its own validated callback origin. Only the unlock page runs
-// script: same-origin files, WebAssembly for Argon2id, same-origin fetch.
+// script: same-origin files, WebAssembly for Argon2id (hash-wasm inside core), same-origin fetch.
 const consentCsp = (tx, scripts = false) => `default-src 'none'; ${scripts ? "script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; " : ''}form-action 'self' ${new URL(tx.redirect).origin}; frame-ancestors 'none'; base-uri 'none'`;
 export function validRedirect(value) {
   try {
@@ -126,10 +130,10 @@ export function installOAuth(app, { store, issuer, upstream, allowedEmails, redi
     const hosts = vault.hosts(tx.credential);
     if (!hosts.length) return page(res, `<p>No SSH hosts are configured for this connection. Tools that need an SSH key will report the vault as locked until you connect again.</p>${skip}`, tx);
     const data = JSON.stringify({ hosts, csrf: tx.csrf, prefix }).replace(/</g, '\\u003c');
-    page(res, `<h2>Unlock your key vault</h2><p>Your vault passphrase stays in this browser. Only the keys for the hosts you tick are sent to this ${html(upstream.kind)} connector, kept in its memory for at most ${Math.round(vault.sessions.ttl / 3600000 * 10) / 10} hours, and dropped when you revoke the connection.</p><form id="vault-unlock"><label>Vault passphrase <input id="vault-passphrase" type="password" autocomplete="current-password" required></label> <button id="vault-unlock-button">Unlock</button></form><form id="vault-select" hidden><div id="vault-hosts"></div><button id="vault-select-button">Unlock selected hosts</button></form><p id="vault-status" role="status"></p>${vault.resetUrl ? `<p><a href="${html(vault.resetUrl)}" target="_blank" rel="noopener noreferrer">Forgot passphrase?</a> A lost passphrase cannot be recovered; resetting the vault means uploading your keys again.</p>` : ''}${skip}<script type="application/json" id="vault-data">${data}</script><script src="${prefix}/oauth/vault/argon2.js"></script><script type="module" src="${prefix}/oauth/vault/vault-unlock.js"></script>`, tx, true);
+    page(res, `<h2>Unlock your key vault</h2><p>Your vault passphrase stays in this browser. Only the keys for the hosts you tick are sent to this ${html(upstream.kind)} connector, kept in its memory for at most ${Math.round(vault.sessions.ttl / 3600000 * 10) / 10} hours, and dropped when you revoke the connection.</p><form id="vault-unlock"><label>Vault passphrase <input id="vault-passphrase" type="password" autocomplete="current-password" required></label> <button id="vault-unlock-button">Unlock</button></form><form id="vault-select" hidden><div id="vault-hosts"></div><button id="vault-select-button">Unlock selected hosts</button></form><p id="vault-status" role="status"></p>${vault.resetUrl ? `<p><a href="${html(vault.resetUrl)}" target="_blank" rel="noopener noreferrer">Forgot passphrase?</a> A lost passphrase cannot be recovered; resetting the vault means uploading your keys again.</p>` : ''}${skip}<script type="application/json" id="vault-data">${data}</script><script type="module" src="${prefix}/oauth/vault/vault-unlock.js"></script>`, tx, true);
   }
   if (vault) {
-    for (const [name, body] of Object.entries(assets)) app.get(`/oauth/vault/${name}`, (_req, res) => res.type('text/javascript').send(body));
+    for (const [name, body] of Object.entries(vaultAssets())) app.get(`/oauth/vault/${name}`, (_req, res) => res.type('text/javascript').send(body));
     // Ciphertext reads and the verifier, proxied with this transaction's own upstream session.
     // Bounded per transaction: a header, up to 20 key blobs, and a few passphrase attempts.
     const vaultStep = (limit, action) => async (req, res) => {

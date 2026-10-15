@@ -8,7 +8,7 @@ let failed=false;
 for(const file of source) {
  const body=readFileSync(file,'utf8');
  const found=[];
- if(/(?:vendor\/(?:psc|client-core)\.mjs|\.env)$/.test(file)) found.push('generated runtime or private configuration is tracked');
+ if(/(?:vendor\/(?:(?:psc|client-core|key-vault)\.mjs|vault-v1-vectors\.json)|\.env)$/.test(file)) found.push('generated runtime or private configuration is tracked');
  if(/-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----[\r\n]+[A-Za-z0-9+/]{20}/.test(body)) found.push('private key material');
  if(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/.test(body)) found.push('cloud credential');
  for(const match of body.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)) if(!match[0].endsWith('@example.com') && !match[0].endsWith('@users.noreply.github.com') && !match[0].startsWith('mcp@')) found.push('non-placeholder email');

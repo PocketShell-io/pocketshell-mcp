@@ -114,10 +114,13 @@ export function vaultSource({ base, fetcher }) {
         throw error;
       }
     },
-    // Public KDF parameters for the gated order; null when phase 2 is not deployed.
+    // VaultServerVerifier.status: public KDF parameters for the gated order (core shape).
     async status({ token }) {
-      try { const raw = await requestJson(base, '/cli/vault/status', { token, fetcher }); return raw?.kdf && typeof raw.kdf === 'object' ? { kdf: raw.kdf } : {}; }
-      catch (error) { if (error instanceof UpstreamError && [404, 503].includes(error.status)) return {}; throw error; }
+      try {
+        const raw = await requestJson(base, '/cli/vault/status', { token, fetcher });
+        if (!Number.isInteger(raw?.epoch) || typeof raw.hasVerifier !== 'boolean') return { kind: 'unavailable' };
+        return { kind: 'ok', epoch: raw.epoch, hasVerifier: raw.hasVerifier, retryAfterMs: Number.isFinite(raw.retryAfter) ? raw.retryAfter * 1000 : 0, ...(raw.kdf && typeof raw.kdf === 'object' ? { kdf: raw.kdf } : {}) };
+      } catch (error) { if (error instanceof UpstreamError) return { kind: 'unavailable' }; throw error; }
     },
     // VaultServerVerifier.verify, mapped 1:1 from the W2 responses.
     async verify({ token }, auth) {

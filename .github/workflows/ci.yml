@@ -15,7 +15,8 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
+      # Tests exercise the pinned core key vault bundle and its known-answer vectors.
+      - run: node scripts/build-client.mjs
       - run: npm test
       - run: node scripts/check-public.mjs
       - run: npm audit --omit=dev --audit-level=moderate
-      - run: node scripts/build-client.mjs

@@ -1,7 +1,8 @@
 // Consent-page vault unlock. The passphrase, master key and DEK never leave this page.
 // Only the private keys of hosts the user ticks are sent, over TLS, to bind to this grant.
 // The connector proxies ciphertext reads and the phase-2 verifier with the user's own session.
-import { KeyVaultStore, hostChoices, toB64u } from './vault-format.js';
+import { KeyVaultStore } from './key-vault.js';
+import { hostChoices, proxyTransport } from './host-choices.js';
 const data = JSON.parse(document.getElementById('vault-data').textContent);
 const $ = id => document.getElementById(id);
 const status = text => { $('vault-status').textContent = text; };
@@ -11,11 +12,7 @@ const post = async (path, body = {}) => {
   if (!response.ok) throw new Error(result.error || 'request_failed');
   return result;
 };
-const store = new KeyVaultStore({
-  argon2id: globalThis.hashwasm.argon2id,
-  transport: { pull: slot => post('pull', { slot }) },
-  verifier: { verify: auth => post('verify', { auth: toB64u(auth) }), status: () => post('status') },
-});
+const store = new KeyVaultStore(proxyTransport(post));
 const seconds = ms => Math.max(1, Math.ceil(ms / 1000));
 $('vault-unlock').addEventListener('submit', async event => {
   event.preventDefault();
