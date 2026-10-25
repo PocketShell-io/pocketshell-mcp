@@ -1,5 +1,10 @@
 # MCP hub
 
+> **Retired 2026-10-26 (archived, read-only).** This MCP hub (`mcp.dtcdev.click/mcp`) is no longer deployed.
+> DataOps tools now live in the dedicated DataOps MCP in the [dataops repo](https://github.com/DataTalksClub/dataops) (`mcp/`, tools `dataops_read`/`dataops_write`/`dataops_guide`),
+> deployed by the DataOps pipeline: `https://frzdkakcapcyf6ywflhieyimgu0vtclr.lambda-url.eu-west-1.on.aws/mcp` (the `McpUrl` output of the `dataops-v1` stack; DataOps bearer auth).
+> Dapier and AISL namespaces were removed; the PocketShell MCP tools are not needed. Last commit with all four namespaces: `ca2eca6`. Intake F10 (78b95a1b).
+
 One generic MCP server for every registered CLI, at one public HTTPS `/mcp` endpoint. Assistant computers need no saved CLI login, SSH key or host pins. A persistent service holds that state and connects through the existing PocketShell gateway front door.
 
 The server uses standard Streamable HTTP and MCP OAuth: discovery, dynamic client registration, authorization code with S256 PKCE, audience binding, short access tokens and rotating refresh tokens. It has no ChatGPT-specific transport or token exchange. The same endpoint can be connected by ChatGPT/dots, Claude, Grok Bot, Cursor, Codex and other OAuth-capable MCP clients.
