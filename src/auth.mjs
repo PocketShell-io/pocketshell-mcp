@@ -67,29 +67,3 @@ registerAuthType('token', {
   },
 });
 
-export function dapierDeviceAuth(base) {
-  httpsOrigin.parse(base);
-  const call = (path, options) => requestJson(base, path, options);
-  return { type:'device',
-    async start(label) {
-      const raw = await call('/api/agent/device/start', { method:'POST', body:{ label } });
-      if (typeof raw.device_code !== 'string' || typeof raw.user_code !== 'string' || !/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(raw.user_code) || !Number.isInteger(raw.expires_in) || raw.expires_in < 1 || raw.expires_in > 3600) throw new UpstreamError(502, 'invalid_device_response');
-      const approval = new URL('/device', base); approval.searchParams.set('code', raw.user_code);
-      return { deviceCode:raw.device_code, userCode:raw.user_code, approval:approval.href, expiry:Date.now()+raw.expires_in*1000, interval:Math.max(1, Math.min(60, Number(raw.interval) || 5)) };
-    },
-    async poll(deviceCode) {
-      const raw = await call('/api/agent/device/token', { method:'POST', body:{ device_code:deviceCode } });
-      if (typeof raw.token !== 'string' || raw.token.length < 20 || typeof raw.email !== 'string' || !raw.email.includes('@') || !Number.isFinite(raw.expires_at) || raw.expires_at * 1000 <= Date.now()) throw new UpstreamError(502, 'invalid_token_response');
-      return { token:raw.token, expiry:raw.expires_at*1000, identity:{ id:digest(`dapier:${raw.email.toLowerCase()}`), email:raw.email.toLowerCase() }, subject:raw.subject };
-    },
-    // Every CLI request itself goes through Dapier's live bearer/session check.
-    async revoke(credential) { await call('/api/agent/device/revoke', { method:'POST', body:{}, token:credential.token }); },
-  };
-}
-registerAuthType('dapier-device', {
-  config: z.strictObject({ type: z.literal('dapier-device') }),
-  create: (_config, { origin }) => ({
-    auth: dapierDeviceAuth(origin),
-    materialize: credential => ({ files: { 'dapier/session.json': JSON.stringify({ token:credential.token, kind:'device', subject:credential.subject, email:credential.identity.email, expires_at:credential.expiry/1000 }) } }),
-  }),
-});

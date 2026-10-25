@@ -34,7 +34,7 @@ if (process.env.MCP_DATAOPS_ORIGIN) {
 }
 for (const registration of loadCliRegistrations(process.env.MCP_CLI_CONFIG_FILE, {runtimeRoot})) {
   const name = registration.manifest.namespace;
-  const title = name === 'aisl' ? 'AI Shipping Labs' : (name.charAt(0).toUpperCase() + name.slice(1));
+  const title = name.charAt(0).toUpperCase() + name.slice(1);
   registrations.push(registration);
   connections.push({name,auth:registration.auth,title,description:registration.manifest.description});
 }

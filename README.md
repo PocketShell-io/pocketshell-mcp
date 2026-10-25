@@ -4,11 +4,11 @@ One generic MCP server for every registered CLI, at one public HTTPS `/mcp` endp
 
 The server uses standard Streamable HTTP and MCP OAuth: discovery, dynamic client registration, authorization code with S256 PKCE, audience binding, short access tokens and rotating refresh tokens. It has no ChatGPT-specific transport or token exchange. The same endpoint can be connected by ChatGPT/dots, Claude, Grok Bot, Cursor, Codex and other OAuth-capable MCP clients.
 
-**Status:** deployed to its public endpoint; protocol tests and Inspector HTTPS tests pass (including a multiplexed-gateway Inspector run for DataOps tools). Live discovery, DCR, consent page and real device-start flows are verified for PocketShell, DataOps and Dapier. Actual ChatGPT/dots, Claude and Grok Bot account tests remain required: the first browser approval and CLI linking need the operator. Protocol compatibility is not a claim that those account tests have passed.
+**Status:** deployed to its public endpoint; protocol tests and Inspector HTTPS tests pass (including a multiplexed-gateway Inspector run for DataOps tools). Live discovery, DCR, consent page and real device-start flows are verified for PocketShell and DataOps. (Dapier and AISL namespaces were removed on 2026-10-26, intake F10.) Actual ChatGPT/dots, Claude and Grok Bot account tests remain required: the first browser approval and CLI linking need the operator. Protocol compatibility is not a claim that those account tests have passed.
 
 ## Tools
 
-One gateway serves every registered CLI. Instead of one MCP tool per subcommand (roughly 100 definitions), it exposes `catalog` plus one short tool per CLI, for example `pocketshell`, `dataops`, `dapier` and `aisl`. Each CLI tool takes CLI-like `argv` (an array, never a shell string):
+One gateway serves every registered CLI. Instead of one MCP tool per subcommand (roughly 100 definitions), it exposes `catalog` plus one short tool per CLI, for example `pocketshell` and `dataops`. Each CLI tool takes CLI-like `argv` (an array, never a shell string):
 
 | Call | Result |
 | --- | --- |

@@ -52,7 +52,6 @@ A JSON array, at most 16 entries. Each entry registers one CLI tool:
 | `auth.type` | Linking | Injected into the worker |
 | --- | --- | --- |
 | `token` | The user pastes a token or API key once on the gateway's HTTPS page | `tokenEnv`, and/or `env` and `files` templates |
-| `dapier-device` | The gateway runs Dapier's device login as its own device | `dapier/session.json` |
 
 DataOps (`MCP_DATAOPS_ORIGIN`) and PocketShell (the primary login) use built-in device flows.
 

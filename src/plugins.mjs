@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 import { cliRegistration } from './adapters.mjs';
 import { createAuth, httpsOrigin, envName } from './auth.mjs';
-export { dapierDeviceAuth, registerAuthType } from './auth.mjs';
+export { registerAuthType } from './auth.mjs';
 // Operator-only JSON config. Each `auth` block is validated by its registered auth type.
 const pluginSchema=z.strictObject({
  manifestFile:z.string(),command:z.string(),prefix:z.array(z.string()).default([]),mounts:z.array(z.string()).default([]),

@@ -1,5 +1,5 @@
 // Real HTTPS + MCP Inspector against the multiplexed gateway (catalog plus all
-// tools per CLI: pocketshell, dataops, dapier, aisl). Upstream account approval
+// tools per CLI: pocketshell, dataops). Upstream account approval
 // is a synthetic fixture; this does not claim an account-level ChatGPT, Claude
 // or Grok Bot acceptance test.
 import test from 'node:test';
@@ -15,7 +15,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Store, secret } from '../src/store.mjs';
 import { createApp } from '../src/app.mjs';
 import { gatewayTools } from '../src/registry.mjs';
-import { pocketRegistration, dataopsRegistration, cliRegistration, staticTokenAuth } from '../src/adapters.mjs';
+import { pocketRegistration, dataopsRegistration } from '../src/adapters.mjs';
 import { pocketTools } from '../src/pocketshell.mjs';
 const execFile = promisify(execFileCallback);
 const inspector = resolve('node_modules/@modelcontextprotocol/inspector/clients/cli/build/index.js');
@@ -42,15 +42,10 @@ test('gateway: real TLS, DCR/PKCE/device bridge and MCP Inspector discovery/call
     upstream: { base: 'https://broker.example.com', gatewayOrigin: 'https://gateway.example.com', devices: async () => [{ id: 'dev-1', presence: 'online', idValid: true }] },
     execute: async (...args) => { seen.push(['pocketshell', ...args]); return { ok: true }; }
   });
-  const dapierManifest = JSON.parse(await readFile(resolve('manifests/dapier.json'), 'utf8'));
-  const aislManifest = JSON.parse(await readFile(resolve('manifests/aisl.json'), 'utf8'));
-  const staticAuth = staticTokenAuth();
 
   const tools = gatewayTools([
     pocketRegistration(pTools),
     dataopsRegistration({ entrypoint: join(dir, 'dataops.mjs'), upstream: { base: 'https://portal.example.com' }, runtimeRoot: dir, run: async options => { seen.push(['dataops', ...options.argv]); return { tasks: [] }; } }),
-    cliRegistration({ manifest: dapierManifest, command: process.execPath, prefix: [], mounts: [], runtimeRoot: dir, auth: device, credentials: () => ({ suffix: [], environment: {} }), run: async options => { seen.push(['dapier', ...options.argv]); return { catalog: [] }; } }),
-    cliRegistration({ manifest: aislManifest, command: process.execPath, prefix: [], mounts: [], runtimeRoot: dir, auth: staticAuth, credentials: () => ({ suffix: [], environment: {} }), run: async options => { seen.push(['aisl', ...options.argv]); return { hosts: [] }; } }),
   ]);
   app = createApp({
     store,
@@ -58,9 +53,7 @@ test('gateway: real TLS, DCR/PKCE/device bridge and MCP Inspector discovery/call
     upstream: { ...device, kind: 'gateway' },
     tools,
     connections: [
-      { name: 'dataops', auth: device },
-      { name: 'dapier', auth: device },
-      { name: 'aisl', auth: staticAuth }
+      { name: 'dataops', auth: device }
     ],
     allowedEmails: [identity.email],
     redirectUris: []
@@ -79,9 +72,6 @@ test('gateway: real TLS, DCR/PKCE/device bridge and MCP Inspector discovery/call
   assert.equal((await call('/oauth/complete', { csrf }, browser)).status, 200);
   assert.equal((await call('/oauth/link/start', { csrf, cli: 'dataops' }, browser)).status, 200);
   assert.equal((await call('/oauth/link/complete', { csrf, cli: 'dataops' }, browser)).status, 200);
-  assert.equal((await call('/oauth/link/start', { csrf, cli: 'dapier' }, browser)).status, 200);
-  assert.equal((await call('/oauth/link/complete', { csrf, cli: 'dapier' }, browser)).status, 200);
-  assert.equal((await call('/oauth/link/token', { csrf, cli: 'aisl', token: 'synthetic-aisl-token' }, browser)).status, 200);
   const done = await call('/oauth/link/finish', { csrf }, browser); assert.equal(done.status, 303);
   const redirect = new URL(done.headers.get('location'));
   const exchange = await call('/oauth/token', { grant_type: 'authorization_code', client_id: client.client_id, redirect_uri: client.redirect_uris[0], code: redirect.searchParams.get('code'), code_verifier: verifier, resource: issuer + '/mcp' }); assert.equal(exchange.status, 200); const token = await exchange.json();
@@ -91,14 +81,14 @@ test('gateway: real TLS, DCR/PKCE/device bridge and MCP Inspector discovery/call
     catch { assert.fail('Inspector process failed; raw diagnostics suppressed to protect credentials'); }
   };
   const listed = await run(['--method', 'tools/list']); const discovered = JSON.parse(listed.stdout); const names = (discovered.tools || discovered).map(x => x.name).sort();
-  assert.deepEqual(names, ['aisl', 'catalog', 'dapier', 'dataops', 'pocketshell']);
+  assert.deepEqual(names, ['catalog', 'dataops', 'pocketshell']);
   const dataopsToolDef = (discovered.tools || discovered).find(x => x.name === 'dataops');
   assert.ok(JSON.stringify(dataopsToolDef.inputSchema).includes('argv'));
 
   // 1. Catalog tool call via Inspector
   const catalog = JSON.parse((await run(['--method', 'tools/call', '--tool-name', 'catalog'])).stdout);
   assert.equal(catalog.isError || false, false);
-  assert.deepEqual(JSON.parse(catalog.content[0].text).clis.map(x => x.name), ['pocketshell', 'dataops', 'dapier', 'aisl']);
+  assert.deepEqual(JSON.parse(catalog.content[0].text).clis.map(x => x.name), ['pocketshell', 'dataops']);
 
   // 2. PocketShell read-only tool call via Inspector
   const psCall = JSON.parse((await run(['--method', 'tools/call', '--tool-name', 'pocketshell', '--tool-args-json', JSON.stringify({ argv: ['hosts'] })])).stdout);
@@ -111,15 +101,4 @@ test('gateway: real TLS, DCR/PKCE/device bridge and MCP Inspector discovery/call
   assert.deepEqual(JSON.parse(doCall.content[0].text), { tasks: [] });
   assert.deepEqual(seen.find(x => x[0] === 'dataops'), ['dataops', 'tasks', 'list', '--mine', '--json']);
 
-  // 4. Dapier read-only tool call via Inspector
-  const dapierCall = JSON.parse((await run(['--method', 'tools/call', '--tool-name', 'dapier', '--tool-args-json', JSON.stringify({ argv: ['catalog'] })])).stdout);
-  assert.equal(dapierCall.isError || false, false);
-  assert.deepEqual(JSON.parse(dapierCall.content[0].text), { catalog: [] });
-  assert.deepEqual(seen.find(x => x[0] === 'dapier'), ['dapier', 'catalog']);
-
-  // 5. AISL read-only tool call via Inspector
-  const aislCall = JSON.parse((await run(['--method', 'tools/call', '--tool-name', 'aisl', '--tool-args-json', JSON.stringify({ argv: ['hosts', 'list'] })])).stdout);
-  assert.equal(aislCall.isError || false, false);
-  assert.deepEqual(JSON.parse(aislCall.content[0].text), { hosts: [] });
-  assert.deepEqual(seen.find(x => x[0] === 'aisl'), ['aisl', 'hosts', 'list']);
 });
